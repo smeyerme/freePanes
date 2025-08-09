@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Multi-Viewport Developer Tool</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #0f0f0f;
+        color: #fff;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .header {
+        background: #1e1e1e;
+        padding: 15px 20px;
+        border-bottom: 1px solid #333;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        flex-shrink: 0;
+      }
+
+      .url-bar {
+        flex: 1;
+        display: flex;
+        gap: 10px;
+        background: #1a1a1a;
+        padding: 5px;
+        border-radius: 10px;
+      }
+
+      .url-input {
+        flex: 1;
+        padding: 10px 15px;
+        background: transparent;
+        border: none;
+        color: #fff;
+        font-size: 14px;
+      }
+
+      .url-input:focus {
+        outline: none;
+      }
+
+      .btn {
+        padding: 8px 16px;
+        background: #4a9eff;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .btn:hover {
+        background: #3a8eef;
+      }
+
+      .toolbar {
+        background: #1a1a1a;
+        padding: 10px 20px;
+        display: flex;
+        gap: 20px;
+        align-items: center;
+        border-bottom: 1px solid #2a2a2a;
+        flex-shrink: 0;
+      }
+
+      .sync-controls {
+        display: flex;
+        gap: 15px;
+      }
+
+      .sync-option {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        background: #2a2a2a;
+        border-radius: 20px;
+        font-size: 12px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .sync-option.active {
+        background: #4a9eff;
+      }
+
+      .sync-option input {
+        cursor: pointer;
+      }
+
+      .viewports-container {
+        flex: 1;
+        padding: 20px;
+        overflow-x: auto;
+        overflow-y: auto;
+        display: flex;
+        gap: 20px;
+        background: #0f0f0f;
+        align-items: flex-start;
+      }
+
+      .viewport {
+        background: #1a1a1a;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        flex-shrink: 0;
+      }
+
+      .viewport-header {
+        background: #2a2a2a;
+        padding: 10px 15px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid #333;
+      }
+
+      .device-name {
+        font-weight: 600;
+        font-size: 13px;
+      }
+
+      .device-size {
+        font-size: 11px;
+        color: #888;
+      }
+
+      .webview-container {
+        position: relative;
+        overflow: hidden;
+        background: white;
+      }
+
+      /* Critical: Webview must be display:inline-flex to render full height */
+      webview {
+        background: white;
+        display: inline-flex !important;
+        position: absolute;
+        top: 0;
+        left: 0;
+      }
+
+      .device-preset {
+        padding: 6px 12px;
+        background: #2a2a2a;
+        border: 1px solid #333;
+        border-radius: 8px;
+        color: #aaa;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .device-preset:hover {
+        background: #333;
+        color: #fff;
+      }
+
+      .device-preset.active {
+        background: #4a9eff;
+        color: white;
+        border-color: #4a9eff;
+      }
+
+      .status-bar {
+        background: #1a1a1a;
+        padding: 8px 20px;
+        border-top: 1px solid #2a2a2a;
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: #888;
+        flex-shrink: 0;
+      }
+
+      /* Debug mode styles */
+      .debug-info {
+        position: fixed;
+        bottom: 50px;
+        right: 20px;
+        background: rgba(0,0,0,0.8);
+        color: #0f0;
+        padding: 10px;
+        font-family: monospace;
+        font-size: 11px;
+        border-radius: 5px;
+        max-width: 300px;
+        z-index: 9999;
+        display: none;
+      }
+
+      .debug-info.active {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="url-bar">
+        <input type="text" class="url-input" id="urlInput" placeholder="Enter URL..." value="https://example.com">
+        <button class="btn" onclick="loadURL()">Go</button>
+        <button class="btn" onclick="reloadAll()">⟳</button>
+      </div>
+
+      <div class="device-presets">
+        <button class="device-preset active" onclick="loadPreset('responsive')">Responsive</button>
+        <button class="device-preset" onclick="loadPreset('mobile')">Mobile</button>
+        <button class="device-preset" onclick="loadPreset('desktop')">Desktop</button>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="sync-controls">
+        <label class="sync-option active" id="syncScroll">
+          <input type="checkbox" checked> Sync Scroll
+      </label>
+        <label class="sync-option active" id="syncNavigation">
+          <input type="checkbox" checked> Sync Navigation
+      </label>
+        <label class="sync-option active" id="syncClick">
+          <input type="checkbox" checked> Sync Clicks
+      </label>
+        <label class="sync-option" id="syncHover">
+          <input type="checkbox"> Sync Hover
+      </label>
+        <label class="sync-option" id="syncInput">
+          <input type="checkbox"> Sync Input
+      </label>
+      </div>
+
+      <button class="btn" onclick="showDebugInfo()" style="margin-left: auto;">Debug</button>
+    </div>
+
+    <div class="viewports-container" id="viewportsContainer"></div>
+
+    <div class="status-bar">
+      <span>Sync Active</span>
+      <span id="deviceCount">3 devices</span>
+    </div>
+
+    <div class="debug-info" id="debugInfo"></div>
+
+    <script src="renderer.js"></script>
+    <script>
+      // Debug helper
+      function toggleDebug() {
+        const debugInfo = document.getElementById('debugInfo');
+        debugInfo
+          .classList
+          .toggle('active');
+
+        if (debugInfo.classList.contains('active')) {
+          setInterval(() => {
+            const webviews = document.querySelectorAll('webview');
+            let info = `Webviews: ${webviews.length}\n`;
+            webviews.forEach((wv, i) => {
+              const rect = wv.getBoundingClientRect();
+              info += `WV${i}: ${rect.width}x${rect.height}\n`;
+            });
+            debugInfo.textContent = info;
+          }, 1000);
+        }
+      }
+    </script>
+  </body>
+</html>
