@@ -172,10 +172,23 @@ function setupIPCHandlers() {
     }
   });
   
+  // Handle getting cookies from the shared session
+  ipcMain.handle('get-session-cookies', async (event, url) => {
+    console.log('IPC: Getting cookies for URL:', url);
+    try {
+      const cookies = await session.fromPartition('persist:shared').cookies.get({ url });
+      console.log(`IPC: Found ${cookies.length} cookies for ${url}`);
+      return cookies;
+    } catch (error) {
+      console.error('IPC: Error getting cookies:', error);
+      return [];
+    }
+  });
+
   // Handle Playwright-based screenshot (better than Puppeteer for this use case)
   ipcMain.handle('capture-playwright-screenshot', async (event, options) => {
     console.log('IPC: capture-playwright-screenshot called');
-    const { url, width, height, deviceScaleFactor, userAgent, appState, recordedActions } = options;
+    const { url, width, height, deviceScaleFactor, userAgent, appState, recordedActions, cookies } = options;
     
     const { chromium } = require('playwright');
     let browser = null;
@@ -192,18 +205,67 @@ function setupIPCHandlers() {
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-web-security',
-          '--allow-running-insecure-content'
+          '--allow-running-insecure-content',
+          '--disable-features=IsolateOrigins,site-per-process',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-site-isolation-trials',
+          '--allow-file-access-from-files',
+          '--allow-cross-origin-auth-prompt'
         ]
       });
       
-      const context = await browser.newContext({
+      // Extract origin from URL for proper headers
+      const urlObj = new URL(url);
+      const origin = `${urlObj.protocol}//${urlObj.host}`;
+      
+      // Create context with cookies if provided
+      const contextOptions = {
         viewport: {
           width: width,
           height: height
         },
         deviceScaleFactor: deviceScaleFactor,
-        userAgent: userAgent
-      });
+        userAgent: userAgent,
+        // Add extra HTTP headers to prevent Origin issues
+        extraHTTPHeaders: {
+          'Origin': origin,
+          'Referer': url,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        // Bypass CSP to allow all resources to load
+        bypassCSP: true,
+        // Accept downloads
+        acceptDownloads: true,
+        // Ignore HTTPS errors
+        ignoreHTTPSErrors: true
+      };
+
+      const context = await browser.newContext(contextOptions);
+      
+      // Add cookies to the context if provided
+      if (cookies && cookies.length > 0) {
+        console.log(`IPC: Adding ${cookies.length} cookies to Playwright context`);
+        
+        // Convert Electron cookies to Playwright format
+        const playwrightCookies = cookies.map(cookie => ({
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path || '/',
+          expires: cookie.expirationDate || undefined,
+          httpOnly: cookie.httpOnly || false,
+          secure: cookie.secure || false,
+          sameSite: cookie.sameSite === 'no_restriction' ? 'None' : 
+                    cookie.sameSite === 'lax' ? 'Lax' : 
+                    cookie.sameSite === 'strict' ? 'Strict' : 'None'
+        }));
+        
+        await context.addCookies(playwrightCookies);
+        console.log('IPC: Cookies added successfully');
+      }
       
       const page = await context.newPage();
       
@@ -746,7 +808,7 @@ let manualBrowsers = [];
 // Handle opening manual browsers
 ipcMain.handle('open-manual-browsers', async (event, options) => {
   console.log('IPC: Opening manual browsers for manual screenshot mode');
-  const { url, devices, appState } = options;
+  const { url, devices, appState, cookies } = options;
   
   try {
     const { chromium } = require('playwright');
@@ -762,17 +824,63 @@ ipcMain.handle('open-manual-browsers', async (event, options) => {
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-web-security',
-          '--allow-running-insecure-content'
+          '--allow-running-insecure-content',
+          '--disable-features=IsolateOrigins,site-per-process',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-site-isolation-trials',
+          '--allow-file-access-from-files',
+          '--allow-cross-origin-auth-prompt'
         ]
       });
+      
+      // Extract origin from URL for proper headers
+      const urlObj = new URL(url);
+      const origin = `${urlObj.protocol}//${urlObj.host}`;
       
       const context = await browser.newContext({
         viewport: {
           width: device.width,
           height: device.height
         },
-        deviceScaleFactor: device.deviceScaleFactor
+        deviceScaleFactor: device.deviceScaleFactor,
+        // Add extra HTTP headers to prevent Origin issues
+        extraHTTPHeaders: {
+          'Origin': origin,
+          'Referer': url,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        // Bypass CSP to allow all resources to load
+        bypassCSP: true,
+        // Accept downloads
+        acceptDownloads: true,
+        // Ignore HTTPS errors
+        ignoreHTTPSErrors: true
       });
+      
+      // Add cookies to the context if provided
+      if (cookies && cookies.length > 0) {
+        console.log(`IPC: Adding ${cookies.length} cookies to ${device.name} browser`);
+        
+        // Convert Electron cookies to Playwright format
+        const playwrightCookies = cookies.map(cookie => ({
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path || '/',
+          expires: cookie.expirationDate || undefined,
+          httpOnly: cookie.httpOnly || false,
+          secure: cookie.secure || false,
+          sameSite: cookie.sameSite === 'no_restriction' ? 'None' : 
+                    cookie.sameSite === 'lax' ? 'Lax' : 
+                    cookie.sameSite === 'strict' ? 'Strict' : 'None'
+        }));
+        
+        await context.addCookies(playwrightCookies);
+        console.log(`IPC: Cookies added to ${device.name} browser`);
+      }
       
       const page = await context.newPage();
       

@@ -40,7 +40,6 @@ let deviceSpecificActions = {}; // Store actions per device name
 let isRecording = false;
 let customDeviceSelection = []; // For custom preset
 let currentPreset = 'responsive';
-let hideScrollbars = true; // Default to hiding scrollbars
 let syncSettings = {
   scroll: true,
   navigation: true, // Sync URL/route changes
@@ -89,12 +88,7 @@ function createViewport(deviceName) {
   container.style.height = device.height * scale + "px";
   container.style.position = "relative";
   
-  // Only hide overflow if scrollbars are visible, otherwise allow scrolling
-  if (hideScrollbars) {
-    container.style.overflow = "auto"; // Allow scrolling when scrollbars are hidden
-  } else {
-    container.style.overflow = "hidden"; // Hide overflow when scrollbars are visible
-  }
+  container.style.overflow = "hidden";
 
   // Create webview
   const webview = document.createElement("webview");
@@ -135,17 +129,9 @@ function createViewport(deviceName) {
 
   // Wait for DOM ready before injecting scripts
   webview.addEventListener("dom-ready", () => {
-    // Apply scrollbar hiding FIRST if enabled (before sync scripts)
-    if (hideScrollbars) {
-      applyScrollbarHiding(webview);
-    }
-    
-    // Then inject sync scripts after scrollbar CSS is applied
+    // Inject sync scripts
     if (syncSettings.scroll || syncSettings.hover || syncSettings.input) {
-      // Small delay to ensure CSS is applied
-      setTimeout(() => {
-        setupWebviewSync(webview);
-      }, 100);
+      setupWebviewSync(webview);
     }
   });
 
@@ -844,114 +830,6 @@ window.loadPreset = function (presetName) {
 window.loadURL = loadURL;
 window.reloadAll = reloadAll;
 
-// Apply scrollbar hiding to a webview
-function applyScrollbarHiding(webview) {
-  const hideScrollbarsCSS = `
-    /* Hide scrollbars while maintaining scroll functionality */
-    ::-webkit-scrollbar {
-      width: 0px !important;
-      height: 0px !important;
-      background: transparent !important;
-    }
-    
-    /* For Firefox */
-    * {
-      scrollbar-width: none !important;
-    }
-    
-    /* Ensure overflow is still scrollable */
-    html, body {
-      overflow: auto !important;
-    }
-  `;
-
-  webview.executeJavaScript(`
-    (function() {
-      // Remove any existing scrollbar styles
-      const existingStyle = document.getElementById('hide-scrollbars-style');
-      if (existingStyle) {
-        existingStyle.remove();
-      }
-      
-      // Add new scrollbar hiding styles
-      const style = document.createElement('style');
-      style.id = 'hide-scrollbars-style';
-      style.textContent = \`${hideScrollbarsCSS}\`;
-      document.head.appendChild(style);
-      
-      console.log('Scrollbars hidden');
-    })();
-  `).catch(err => {
-    console.log(`Failed to hide scrollbars for ${webview.deviceName}:`, err);
-  });
-}
-
-// Remove scrollbar hiding from a webview
-function removeScrollbarHiding(webview) {
-  webview.executeJavaScript(`
-    (function() {
-      const existingStyle = document.getElementById('hide-scrollbars-style');
-      if (existingStyle) {
-        existingStyle.remove();
-        console.log('Scrollbars restored');
-      }
-    })();
-  `).catch(err => {
-    console.log(`Failed to restore scrollbars for ${webview.deviceName}:`, err);
-  });
-}
-
-// Update scroll sync state based on scrollbar visibility
-function updateScrollSyncState() {
-  const scrollToggle = document.getElementById("syncScroll");
-  if (scrollToggle) {
-    if (hideScrollbars) {
-      // Disable scroll sync when scrollbars are hidden
-      scrollToggle.style.opacity = "0.5";
-      scrollToggle.style.pointerEvents = "none";
-      scrollToggle.classList.remove("active");
-      scrollToggle.querySelector("input").checked = false;
-      syncSettings.scroll = false;
-      
-      // Add a tooltip or visual indicator
-      scrollToggle.setAttribute("title", "Scroll sync disabled when scrollbars are hidden");
-    } else {
-      // Enable scroll sync when scrollbars are visible
-      scrollToggle.style.opacity = "1";
-      scrollToggle.style.pointerEvents = "auto";
-      scrollToggle.classList.add("active");
-      scrollToggle.querySelector("input").checked = true;
-      syncSettings.scroll = true;
-      
-      // Remove tooltip
-      scrollToggle.removeAttribute("title");
-    }
-  }
-}
-
-// Apply scrollbar setting to all webviews
-function updateScrollbarVisibility() {
-  webviews.forEach(webview => {
-    if (webview.getURL() && webview.getURL() !== "about:blank") {
-      if (hideScrollbars) {
-        applyScrollbarHiding(webview);
-        // Allow container scrolling when scrollbars are hidden
-        webview.containerElement.style.overflow = "auto";
-      } else {
-        removeScrollbarHiding(webview);
-        // Hide container overflow when scrollbars are visible  
-        webview.containerElement.style.overflow = "hidden";
-      }
-      
-      // Reinject sync scripts after scrollbar changes to ensure scroll events work
-      if (syncSettings.scroll || syncSettings.hover || syncSettings.input) {
-        setTimeout(() => {
-          setupWebviewSync(webview);
-        }, 150); // Slightly longer delay to ensure CSS changes are applied
-      }
-    }
-  });
-}
 
 // Toggle DevTools for a specific webview
 function toggleDevTools(webview, button) {
@@ -1059,23 +937,6 @@ function setupSyncToggles() {
     });
   }
 
-  // Hide scrollbars toggle (enabled by default)
-  const scrollbarsToggle = document.getElementById("hideScrollbars");
-  if (scrollbarsToggle) {
-    scrollbarsToggle.addEventListener("click", function (e) {
-      e.preventDefault();
-      const checkbox = this.querySelector("input");
-      const isActive = this.classList.contains("active");
-      
-      checkbox.checked = !isActive;
-      this.classList.toggle("active");
-      hideScrollbars = !isActive;
-      
-      // Update scroll sync availability based on scrollbar visibility
-      updateScrollSyncState();
-      updateScrollbarVisibility();
-    });
-  }
 }
 
 function reinjectSyncScripts() {
@@ -1119,9 +980,6 @@ document.addEventListener("DOMContentLoaded", () => {
   setupSyncToggles();
   setupKeyboardShortcuts();
   setupResizeHandler();
-  
-  // Set initial scroll sync state based on scrollbar visibility
-  updateScrollSyncState();
   
   // Populate device list in sidebar
   populateDeviceList();
@@ -1311,6 +1169,15 @@ async function screenshotAll() {
             appState = null;
           }
           
+          // Get cookies from the shared session
+          let cookies = [];
+          try {
+            cookies = await ipcRenderer.invoke('get-session-cookies', currentURL);
+            console.log(`  Got ${cookies.length} cookies from session`);
+          } catch (cookieError) {
+            console.warn(`  Failed to get cookies:`, cookieError);
+          }
+          
           // Use Playwright in completely separate browser - webviews stay untouched
           buffer = await ipcRenderer.invoke('capture-playwright-screenshot', {
             url: currentURL,
@@ -1318,7 +1185,8 @@ async function screenshotAll() {
             height: logicalHeight, 
             deviceScaleFactor: deviceScaleFactor,
             userAgent: webview.getAttribute('useragent'),
-            appState: appState
+            appState: appState,
+            cookies: cookies
           });
           
           console.log(`  ✅ Separate browser capture successful (${buffer.length} bytes)`);
@@ -1415,6 +1283,10 @@ function setUIMode(mode) {
 // Recording control functions
 window.startRecording = function() {
   console.log('Starting device-specific recording across all webviews...');
+  startRecordingInternal();
+};
+
+function startRecordingInternal() {
   isRecording = true;
   recordedActions = [];
   deviceSpecificActions = {}; // Reset device-specific actions
@@ -1431,7 +1303,7 @@ window.startRecording = function() {
   
   // Update UI to recording mode
   setUIMode('recording');
-};
+}
 
 window.stopRecording = async function() {
   console.log('Stopping device-specific recording...');
@@ -1573,6 +1445,15 @@ window.screenshotAllWithReplay = async function() {
           appState = null;
         }
         
+        // Get cookies from the shared session
+        let cookies = [];
+        try {
+          cookies = await ipcRenderer.invoke('get-session-cookies', currentURL);
+          console.log(`  Got ${cookies.length} cookies from session`);
+        } catch (cookieError) {
+          console.warn(`  Failed to get cookies:`, cookieError);
+        }
+        
         // Use Playwright with device-specific actions
         const buffer = await ipcRenderer.invoke('capture-playwright-screenshot', {
           url: currentURL,
@@ -1581,7 +1462,8 @@ window.screenshotAllWithReplay = async function() {
           deviceScaleFactor: deviceScaleFactor,
           userAgent: webview.getAttribute('useragent'),
           appState: appState,
-          recordedActions: deviceActions // Use device-specific actions instead of generic ones
+          recordedActions: deviceActions, // Use device-specific actions instead of generic ones
+          cookies: cookies
         });
         
         console.log(`  ✅ Screenshot with replay successful (${buffer.length} bytes)`);
@@ -1724,11 +1606,21 @@ window.openManualMode = async function() {
     
     console.log('Using current preview devices:', currentDevices.map(d => `${d.name} (${d.width}x${d.height} @ ${d.deviceScaleFactor}x)`));
     
+    // Get cookies from the shared session
+    let cookies = [];
+    try {
+      cookies = await ipcRenderer.invoke('get-session-cookies', currentURL || 'http://localhost:8080/');
+      console.log(`Got ${cookies.length} cookies from session for manual mode`);
+    } catch (cookieError) {
+      console.warn(`Failed to get cookies for manual mode:`, cookieError);
+    }
+    
     // Open browsers for each device size for manual navigation
     const result = await ipcRenderer.invoke('open-manual-browsers', {
       url: currentURL || 'http://localhost:8080/',
       appState: appState,
-      devices: currentDevices
+      devices: currentDevices,
+      cookies: cookies
     });
     
     if (result.success) {
