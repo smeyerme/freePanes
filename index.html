@@ -251,8 +251,15 @@
       </label>
       </div>
 
-      <button class="btn" onclick="screenshotAll()" style="margin-left: auto;">📸 Screenshot All</button>
-      <button class="btn" onclick="showDebugInfo()">Debug</button>
+      <div style="display: flex; gap: 10px; margin-left: auto;">
+        <button class="btn" id="manualModeBtn" onclick="openManualMode()" style="background: #4CAF50;">🚀 Manual Screenshot Mode</button>
+        <button class="btn" id="triggerScreenshotBtn" onclick="triggerRemoteScreenshot()" style="background: #2196F3;" disabled>📸 Take Screenshots Now</button>
+        <button class="btn" id="recordBtn" onclick="startRecording()" style="background: #ff4444;">🔴 Start Recording</button>
+        <button class="btn" id="stopBtn" onclick="stopRecording()" style="background: #666;" disabled>⏹️ Stop Recording</button>
+        <button class="btn" id="screenshotWithReplayBtn" onclick="screenshotAllWithReplay()" style="background: #ff8800;" disabled>📹 Screenshot with Replay</button>
+        <button class="btn" onclick="screenshotAll()">📸 Screenshot All</button>
+        <button class="btn" onclick="showDebugInfo()">Debug</button>
+      </div>
     </div>
 
     <div class="viewports-container" id="viewportsContainer"></div>

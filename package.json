@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "canvas": "^3.1.2",
+    "playwright": "^1.54.2",
     "puppeteer": "^24.16.0"
   }
 }

@@ -35,6 +35,8 @@ try {
 let webviews = [];
 let currentURL = "http://localhost:8080/";
 let isScreenshotting = false; // Flag to prevent resize handler during screenshots
+let recordedActions = [];
+let isRecording = false;
 let syncSettings = {
   scroll: true,
   navigation: true, // Sync URL/route changes
@@ -160,12 +162,163 @@ function calculateScale(device) {
 }
 
 function setupWebviewSync(webview) {
-  // Simplified sync script - only essentials
+  // Enhanced sync script with recording functionality
   const syncScript = `
     (function() {
       let isProcessingSync = false;
       let lastScrollTime = 0;
       let lastClickTime = 0;
+      
+      // Recording functionality
+      window.recordedActions = window.recordedActions || [];
+      window.isRecording = false;
+      
+      // Helper function to generate a reliable selector that works across viewports
+      function generateSelector(element) {
+        if (element.id) {
+          return '#' + element.id;
+        }
+        
+        // Try to find a unique class-based selector first
+        if (element.className && typeof element.className === 'string') {
+          const classes = element.className.trim().split(/\\s+/)
+            .filter(c => c && !c.includes('active') && !c.includes('hover') && !c.includes('focus'));
+          
+          // Try single class selectors first
+          for (const cls of classes) {
+            const selector = '.' + cls;
+            if (document.querySelectorAll(selector).length === 1) {
+              return selector;
+            }
+          }
+          
+          // Try combinations of 2 classes
+          if (classes.length >= 2) {
+            const twoClassSelector = '.' + classes.slice(0, 2).join('.');
+            if (document.querySelectorAll(twoClassSelector).length === 1) {
+              return twoClassSelector;
+            }
+          }
+        }
+        
+        // Build a shorter, more flexible path
+        let path = [];
+        let current = element;
+        let maxDepth = 3; // Limit depth to avoid overly specific selectors
+        
+        while (current && current !== document.body && path.length < maxDepth) {
+          let selector = current.tagName.toLowerCase();
+          
+          // Add classes but avoid nth-child when possible
+          if (current.className && typeof current.className === 'string') {
+            const stableClasses = current.className.trim().split(/\\s+/)
+              .filter(c => c && 
+                !c.includes('active') && 
+                !c.includes('hover') && 
+                !c.includes('focus') &&
+                !c.includes('mobile') &&
+                !c.includes('desktop') &&
+                !c.includes('tablet'))
+              .slice(0, 2);
+            
+            if (stableClasses.length > 0) {
+              selector += '.' + stableClasses.join('.');
+            }
+          }
+          
+          // Only use nth-child if absolutely necessary and for small numbers
+          const siblings = current.parentElement ? 
+            Array.from(current.parentElement.children).filter(el => el.tagName === current.tagName) : [];
+          
+          if (siblings.length > 1 && siblings.length <= 3 && !selector.includes('.')) {
+            const index = siblings.indexOf(current) + 1;
+            selector += ':nth-child(' + index + ')';
+          }
+          
+          path.unshift(selector);
+          
+          // Check if current selector is unique enough
+          const currentPath = path.join(' > ');
+          if (document.querySelectorAll(currentPath).length === 1) {
+            return currentPath;
+          }
+          
+          current = current.parentElement;
+        }
+        
+        return path.join(' > ');
+      }
+      
+      // Record clicks
+      document.addEventListener('click', function(e) {
+        if (window.isRecording && !isProcessingSync) {
+          const action = {
+            type: 'click',
+            selector: generateSelector(e.target),
+            coordinates: { 
+              x: e.clientX, 
+              y: e.clientY 
+            },
+            timestamp: Date.now(),
+            tagName: e.target.tagName,
+            text: e.target.textContent ? e.target.textContent.substring(0, 50) : ''
+          };
+          
+          window.recordedActions.push(action);
+          console.log('RECORD:CLICK:', JSON.stringify(action));
+        }
+      }, true);
+      
+      // Record input changes
+      document.addEventListener('input', function(e) {
+        if (window.isRecording && !isProcessingSync) {
+          const action = {
+            type: 'input',
+            selector: generateSelector(e.target),
+            value: e.target.value,
+            timestamp: Date.now()
+          };
+          
+          window.recordedActions.push(action);
+          console.log('RECORD:INPUT:', JSON.stringify(action));
+        }
+      }, true);
+      
+      // Record scrolling (throttled)
+      let scrollTimeout = null;
+      window.addEventListener('scroll', function(e) {
+        if (window.isRecording && !isProcessingSync) {
+          clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(() => {
+            const action = {
+              type: 'scroll',
+              x: window.scrollX,
+              y: window.scrollY,
+              timestamp: Date.now()
+            };
+            
+            window.recordedActions.push(action);
+            console.log('RECORD:SCROLL:', JSON.stringify(action));
+          }, 150);
+        }
+      }, { passive: true });
+      
+      // Global functions for controlling recording
+      window.startRecording = function() {
+        window.isRecording = true;
+        window.recordedActions = [];
+        console.log('🔴 Started recording interactions...');
+      };
+      
+      window.stopRecording = function() {
+        window.isRecording = false;
+        console.log('⏹️ Stopped recording. Captured', window.recordedActions.length, 'actions');
+        return window.recordedActions;
+      };
+      
+      window.getRecordedActions = function() {
+        return window.recordedActions;
+      };
       
       // Only sync scroll - the most reliable sync
       if (${syncSettings.scroll}) {
@@ -696,137 +849,82 @@ async function screenshotAll() {
 
         let buffer;
 
-        // Direct webview capture at full device dimensions
+        // Playwright-based capture in separate browser (doesn't touch existing webviews)
         try {
-          console.log(`  Temporarily resizing webview for full-size capture...`);
+          console.log(`  Opening separate Playwright browser for ${deviceName}...`);
+          console.log(`  → Viewport: ${logicalWidth}x${logicalHeight} @ ${deviceScaleFactor}x DPI`);
+          console.log(`  → Final image will be: ${physicalWidth}x${physicalHeight} pixels`);
           
-          // Store original properties
-          const originalWebviewWidth = webview.style.width;
-          const originalWebviewHeight = webview.style.height;
-          const originalWebviewTransform = webview.style.transform;
-          const originalContainerWidth = webview.containerElement.style.width;
-          const originalContainerHeight = webview.containerElement.style.height;
-          const originalContainerOverflow = webview.containerElement.style.overflow;
-          
-          // Resize to full logical dimensions
-          webview.style.width = logicalWidth + 'px';
-          webview.style.height = logicalHeight + 'px';
-          webview.style.transform = 'none'; // Remove scaling
-          webview.containerElement.style.width = logicalWidth + 'px';
-          webview.containerElement.style.height = logicalHeight + 'px';
-          webview.containerElement.style.overflow = 'visible';
-          
-          // Wait for resize to take effect
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          // Apply zoom for high-DPI capture
-          if (deviceScaleFactor > 1) {
-            console.log(`  Applying ${deviceScaleFactor}x zoom for high-DPI...`);
-            await webview.setZoomFactor(deviceScaleFactor);
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-          
-          // Get content dimensions for tiled capture
-          const contentInfo = await webview.executeJavaScript(`
-            ({
-              scrollWidth: document.documentElement.scrollWidth,
-              scrollHeight: document.documentElement.scrollHeight,
-              clientWidth: document.documentElement.clientWidth,
-              clientHeight: document.documentElement.clientHeight
-            })
-          `);
-          
-          console.log(`  Content size: ${contentInfo.scrollWidth}x${contentInfo.scrollHeight}`);
-          
-          // Calculate how many tiles we need
-          const tilesX = Math.ceil(contentInfo.scrollWidth / logicalWidth);
-          const tilesY = Math.ceil(contentInfo.scrollHeight / logicalHeight);
-          
-          console.log(`  Capturing ${tilesX}x${tilesY} tiles...`);
-          
-          const tiles = [];
-          
-          // Capture tiles by scrolling
-          for (let y = 0; y < tilesY; y++) {
-            for (let x = 0; x < tilesX; x++) {
-              const scrollX = x * logicalWidth;
-              const scrollY = y * logicalHeight;
-              
-              // Scroll to position
-              await webview.executeJavaScript(`
-                window.scrollTo(${scrollX}, ${scrollY});
-              `);
-              
-              // Wait for scroll
-              await new Promise(resolve => setTimeout(resolve, 200));
-              
-              // Capture tile
-              const tileImage = await webview.capturePage();
-              tiles.push({
-                buffer: tileImage.toPNG(),
-                x: scrollX,
-                y: scrollY
-              });
-              
-              console.log(`    Captured tile ${x},${y} at ${scrollX},${scrollY}`);
-            }
-          }
-          
-          // Restore original scroll position
-          await webview.executeJavaScript(`window.scrollTo(0, 0);`);
-          
-          // Restore zoom
-          if (deviceScaleFactor > 1) {
-            await webview.setZoomFactor(1);
-          }
-          
-          // Restore original dimensions
-          webview.style.width = originalWebviewWidth;
-          webview.style.height = originalWebviewHeight;
-          webview.style.transform = originalWebviewTransform;
-          webview.containerElement.style.width = originalContainerWidth;
-          webview.containerElement.style.height = originalContainerHeight;
-          webview.containerElement.style.overflow = originalContainerOverflow;
-          
-          await new Promise(resolve => setTimeout(resolve, 200));
-          
-          if (tiles.length === 1) {
-            buffer = tiles[0].buffer;
-            console.log(`  ✅ Single tile capture complete`);
-          } else {
-            console.log(`  Stitching ${tiles.length} tiles...`);
-            try {
-              buffer = await ipcRenderer.invoke('stitch-images', {
-                chunks: tiles,
-                finalWidth: contentInfo.scrollWidth,
-                finalHeight: contentInfo.scrollHeight,
-                deviceScaleFactor: deviceScaleFactor
-              });
-              console.log(`  ✅ Tiles stitched successfully`);
-            } catch (stitchError) {
-              console.warn(`  Stitching failed, using first tile:`, stitchError);
-              buffer = tiles[0].buffer;
-            }
-          }
-          
-        } catch (error) {
-          console.error(`  Direct capture failed:`, error);
-          console.log(`  Falling back to Puppeteer...`);
+          // Extract localStorage and indexedDB from the current webview
+          console.log(`  Extracting app state from webview...`);
+          let appState = null;
           
           try {
-            // Fallback to Puppeteer
-            buffer = await ipcRenderer.invoke('capture-puppeteer-screenshot', {
-              url: currentURL,
-              width: logicalWidth,
-              height: logicalHeight,
-              deviceScaleFactor: deviceScaleFactor,
-              userAgent: webview.getAttribute('useragent')
-            });
-            console.log(`  Puppeteer fallback successful`);
-          } catch (puppeteerError) {
-            console.error(`  Puppeteer fallback also failed:`, puppeteerError);
-            throw puppeteerError;
+            appState = await webview.executeJavaScript(`
+              (async function() {
+                const state = {
+                  localStorage: {},
+                  sessionStorage: {},
+                  indexedDB: {}
+                };
+                
+                // Extract localStorage
+                for (let i = 0; i < localStorage.length; i++) {
+                  const key = localStorage.key(i);
+                  state.localStorage[key] = localStorage.getItem(key);
+                }
+                
+                // Extract sessionStorage
+                for (let i = 0; i < sessionStorage.length; i++) {
+                  const key = sessionStorage.key(i);
+                  state.sessionStorage[key] = sessionStorage.getItem(key);
+                }
+                
+                // Extract indexedDB (basic approach - gets all databases)
+                try {
+                  const databases = await indexedDB.databases();
+                  for (const dbInfo of databases) {
+                    if (dbInfo.name) {
+                      // We'll just store the database info for now
+                      // Full indexedDB extraction would be more complex
+                      state.indexedDB[dbInfo.name] = {
+                        name: dbInfo.name,
+                        version: dbInfo.version
+                      };
+                    }
+                  }
+                } catch (e) {
+                  console.log('IndexedDB extraction skipped:', e.message);
+                }
+                
+                return state;
+              })()
+            `);
+            
+            console.log(`  Extracted state:`, Object.keys(appState.localStorage).length, 'localStorage items,', 
+                       Object.keys(appState.sessionStorage).length, 'sessionStorage items,',
+                       Object.keys(appState.indexedDB).length, 'indexedDB databases');
+          } catch (stateError) {
+            console.warn(`  Failed to extract app state:`, stateError);
+            appState = null;
           }
+          
+          // Use Playwright in completely separate browser - webviews stay untouched
+          buffer = await ipcRenderer.invoke('capture-playwright-screenshot', {
+            url: currentURL,
+            width: logicalWidth,
+            height: logicalHeight, 
+            deviceScaleFactor: deviceScaleFactor,
+            userAgent: webview.getAttribute('useragent'),
+            appState: appState
+          });
+          
+          console.log(`  ✅ Separate browser capture successful (${buffer.length} bytes)`);
+          
+        } catch (error) {
+          console.error(`  Separate browser capture failed:`, error);
+          console.log(`  Note: This should not affect the existing webviews which remain untouched`);
+          throw error;
         }
 
         const dpiSuffix = deviceScaleFactor > 1 ? `_${deviceScaleFactor}x` : "";
@@ -866,6 +964,425 @@ async function screenshotAll() {
     button.disabled = false;
   }
 }
+
+// Recording control functions
+window.startRecording = function() {
+  console.log('🔴 Starting recording across all webviews...');
+  isRecording = true;
+  recordedActions = [];
+  
+  // Start recording in all webviews
+  webviews.forEach((webview, index) => {
+    try {
+      webview.executeJavaScript('window.startRecording && window.startRecording();');
+      console.log(`Started recording in webview ${index}`);
+    } catch (e) {
+      console.warn(`Failed to start recording in webview ${index}:`, e);
+    }
+  });
+  
+  // Update UI
+  const recordBtn = document.getElementById('recordBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  if (recordBtn) recordBtn.disabled = true;
+  if (stopBtn) stopBtn.disabled = false;
+};
+
+window.stopRecording = async function() {
+  console.log('⏹️ Stopping recording...');
+  isRecording = false;
+  
+  // Get recorded actions from the first webview (they should all have similar actions due to sync)
+  if (webviews.length > 0) {
+    try {
+      recordedActions = await webviews[0].executeJavaScript('window.getRecordedActions && window.getRecordedActions() || [];');
+      console.log(`Captured ${recordedActions.length} actions:`, recordedActions);
+    } catch (e) {
+      console.warn('Failed to get recorded actions:', e);
+      recordedActions = [];
+    }
+  }
+  
+  // Stop recording in all webviews
+  webviews.forEach((webview, index) => {
+    try {
+      webview.executeJavaScript('window.stopRecording && window.stopRecording();');
+    } catch (e) {
+      console.warn(`Failed to stop recording in webview ${index}:`, e);
+    }
+  });
+  
+  // Update UI
+  const recordBtn = document.getElementById('recordBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const screenshotBtn = document.getElementById('screenshotWithReplayBtn');
+  if (recordBtn) recordBtn.disabled = false;
+  if (stopBtn) stopBtn.disabled = true;
+  if (screenshotBtn) screenshotBtn.disabled = recordedActions.length === 0;
+  
+  alert(`Recording stopped! Captured ${recordedActions.length} actions.`);
+};
+
+window.screenshotAllWithReplay = async function() {
+  console.log('📸 Taking screenshots with replay...');
+  
+  if (recordedActions.length === 0) {
+    alert('No recorded actions found! Please record some interactions first.');
+    return;
+  }
+  
+  console.log(`Using ${recordedActions.length} recorded actions for screenshots`);
+  
+  if (webviews.length === 0) {
+    alert("No webviews to screenshot!");
+    return;
+  }
+
+  const button = document.querySelector('button[onclick="screenshotAllWithReplay()"]');
+  const originalText = button.textContent;
+  button.textContent = "📹 Replaying & Screenshot...";
+  button.disabled = true;
+  
+  // Set flag to prevent resize handler from reloading presets
+  isScreenshotting = true;
+
+  try {
+    const { ipcRenderer } = require("electron");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+    // Create screenshots directory if it doesn't exist
+    const screenshotsDir = require("path").join(process.cwd(), "screenshots");
+    const fs = require("fs");
+    
+    console.log("Screenshots directory:", screenshotsDir);
+
+    if (!fs.existsSync(screenshotsDir)) {
+      console.log("Creating screenshots directory...");
+      fs.mkdirSync(screenshotsDir);
+    }
+
+    let successCount = 0;
+    const totalCount = webviews.length;
+
+    // Take screenshot of each webview with replay
+    for (let i = 0; i < webviews.length; i++) {
+      const webview = webviews[i];
+      const deviceName = webview.deviceName ? webview.deviceName.replace(/[^a-zA-Z0-9]/g, "_") : `device_${i}`;
+      
+      console.log(`Processing webview ${i + 1}/${totalCount}: ${deviceName} with ${recordedActions.length} actions`);
+
+      try {
+        // Get device info
+        const deviceScaleFactor = webview.deviceInfo?.deviceScaleFactor || 1;
+        const logicalWidth = webview.deviceInfo?.width || 375;
+        const logicalHeight = webview.deviceInfo?.height || 667;
+        const physicalWidth = logicalWidth * deviceScaleFactor;
+        const physicalHeight = logicalHeight * deviceScaleFactor;
+        
+        const currentURL = webview.getURL();
+        console.log(`  URL: ${currentURL}`);
+        console.log(`  Device scale factor: ${deviceScaleFactor}`);
+        console.log(`  Dimensions: ${logicalWidth}x${logicalHeight} (logical), ${physicalWidth}x${physicalHeight} (physical)`);
+
+        // Extract app state
+        console.log(`  Extracting app state from webview...`);
+        let appState = null;
+        
+        try {
+          appState = await webview.executeJavaScript(`
+            (async function() {
+              const state = {
+                localStorage: {},
+                sessionStorage: {},
+                indexedDB: {}
+              };
+              
+              // Extract localStorage
+              for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                state.localStorage[key] = localStorage.getItem(key);
+              }
+              
+              // Extract sessionStorage
+              for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                state.sessionStorage[key] = sessionStorage.getItem(key);
+              }
+              
+              return state;
+            })()
+          `);
+          
+          console.log(`  Extracted state:`, Object.keys(appState.localStorage).length, 'localStorage items,', 
+                     Object.keys(appState.sessionStorage).length, 'sessionStorage items');
+        } catch (stateError) {
+          console.warn(`  Failed to extract app state:`, stateError);
+          appState = null;
+        }
+        
+        // Use Playwright with recorded actions
+        const buffer = await ipcRenderer.invoke('capture-playwright-screenshot', {
+          url: currentURL,
+          width: logicalWidth,
+          height: logicalHeight, 
+          deviceScaleFactor: deviceScaleFactor,
+          userAgent: webview.getAttribute('useragent'),
+          appState: appState,
+          recordedActions: recordedActions
+        });
+        
+        console.log(`  ✅ Screenshot with replay successful (${buffer.length} bytes)`);
+
+        const dpiSuffix = deviceScaleFactor > 1 ? `_${deviceScaleFactor}x` : "";
+        const filename = `screenshot_replay_${timestamp}_${deviceName}${dpiSuffix}.png`;
+        const filepath = require("path").join(screenshotsDir, filename);
+
+        console.log(`  Writing to file: ${filepath}`);
+        fs.writeFileSync(filepath, buffer);
+        successCount++;
+
+        console.log(`  ✅ Screenshot saved: ${filepath}`);
+        console.log(
+          `    Logical: ${logicalWidth}x${logicalHeight} (website sees this)`
+        );
+        console.log(
+          `    Physical: ${physicalWidth}x${physicalHeight} (screenshot target)`
+        );
+        console.log(`    Scale: ${deviceScaleFactor}x`);
+        console.log(`    Actions replayed: ${recordedActions.length}`);
+      } catch (error) {
+        console.error(`❌ Failed to screenshot ${deviceName}:`, error);
+        console.error(`  Error details:`, error.stack);
+      }
+    }
+
+    console.log(`Screenshot with replay process complete: ${successCount}/${totalCount} successful`);
+    alert(
+      `Screenshots with replay complete! Saved ${successCount}/${totalCount} screenshots to /screenshots folder`
+    );
+  } catch (error) {
+    console.error("❌ Screenshot with replay error:", error);
+    console.error("Error stack:", error.stack);
+    alert(`Failed to take screenshots with replay: ${error.message}\n\nCheck DevTools console for details.`);
+  } finally {
+    // Reset flag
+    isScreenshotting = false;
+    button.textContent = originalText;
+    button.disabled = false;
+  }
+};
+
+// Manual screenshot mode
+let manualModeActive = false;
+let manualModeBrowsers = [];
+
+window.openManualMode = async function() {
+  console.log('🚀 Opening manual screenshot mode...');
+  
+  if (manualModeActive) {
+    alert('Manual mode is already active!');
+    return;
+  }
+  
+  const manualBtn = document.getElementById('manualModeBtn');
+  const triggerBtn = document.getElementById('triggerScreenshotBtn');
+  
+  manualBtn.textContent = '⏳ Extracting state...';
+  manualBtn.disabled = true;
+  
+  try {
+    const { ipcRenderer } = require('electron');
+    
+    // Extract state from the first webview (they should have similar state due to sync)
+    let appState = null;
+    if (webviews.length > 0) {
+      console.log('Extracting app state from preview webviews...');
+      
+      try {
+        appState = await webviews[0].executeJavaScript(`
+          (async function() {
+            const state = {
+              localStorage: {},
+              sessionStorage: {},
+              indexedDB: {}
+            };
+            
+            // Extract localStorage
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              state.localStorage[key] = localStorage.getItem(key);
+            }
+            
+            // Extract sessionStorage
+            for (let i = 0; i < sessionStorage.length; i++) {
+              const key = sessionStorage.key(i);
+              state.sessionStorage[key] = sessionStorage.getItem(key);
+            }
+            
+            // Extract indexedDB (basic approach)
+            try {
+              const databases = await indexedDB.databases();
+              for (const dbInfo of databases) {
+                if (dbInfo.name) {
+                  state.indexedDB[dbInfo.name] = {
+                    name: dbInfo.name,
+                    version: dbInfo.version
+                  };
+                }
+              }
+            } catch (e) {
+              console.log('IndexedDB extraction skipped:', e.message);
+            }
+            
+            return state;
+          })()
+        `);
+        
+        console.log('Extracted state:', Object.keys(appState.localStorage).length, 'localStorage items,', 
+                   Object.keys(appState.sessionStorage).length, 'sessionStorage items,',
+                   Object.keys(appState.indexedDB).length, 'indexedDB databases');
+      } catch (stateError) {
+        console.warn('Failed to extract app state:', stateError);
+        appState = null;
+      }
+    }
+    
+    manualBtn.textContent = '⏳ Opening browsers...';
+    
+    // Get current device configuration from active webviews
+    const currentDevices = [];
+    webviews.forEach((webview, index) => {
+      if (webview.deviceInfo && webview.deviceName) {
+        currentDevices.push({
+          name: webview.deviceName,
+          width: webview.deviceInfo.width,
+          height: webview.deviceInfo.height,
+          deviceScaleFactor: webview.deviceInfo.deviceScaleFactor || 1
+        });
+      }
+    });
+    
+    if (currentDevices.length === 0) {
+      throw new Error('No devices found in preview. Please load a device preset first.');
+    }
+    
+    console.log('Using current preview devices:', currentDevices.map(d => `${d.name} (${d.width}x${d.height} @ ${d.deviceScaleFactor}x)`));
+    
+    // Open browsers for each device size for manual navigation
+    const result = await ipcRenderer.invoke('open-manual-browsers', {
+      url: currentURL || 'http://localhost:8080/',
+      appState: appState,
+      devices: currentDevices
+    });
+    
+    if (result.success) {
+      manualModeActive = true;
+      manualModeBrowsers = result.browsers;
+      
+      manualBtn.textContent = '✅ Manual Mode Active';
+      manualBtn.style.background = '#4CAF50';
+      triggerBtn.disabled = false;
+      
+      // Generate device list for user message
+      const deviceList = currentDevices.map(d => 
+        `• ${d.name} (${d.width}x${d.height} @ ${d.deviceScaleFactor}x)`
+      ).join('\n');
+      
+      alert(`Manual mode active! 
+      
+${currentDevices.length} browser windows are now open:
+${deviceList}
+
+Navigate to the exact state you want in each browser, then click "📸 Take Screenshots Now"`);
+      
+    } else {
+      throw new Error(result.error || 'Failed to open browsers');
+    }
+    
+  } catch (error) {
+    console.error('Failed to open manual mode:', error);
+    alert(`Failed to open manual mode: ${error.message}`);
+    
+    manualBtn.textContent = '🚀 Manual Screenshot Mode';
+    manualBtn.disabled = false;
+  }
+};
+
+window.triggerRemoteScreenshot = async function() {
+  if (!manualModeActive) {
+    alert('Manual mode is not active!');
+    return;
+  }
+  
+  console.log('📸 Triggering remote screenshots...');
+  
+  const triggerBtn = document.getElementById('triggerScreenshotBtn');
+  const originalText = triggerBtn.textContent;
+  triggerBtn.textContent = '📸 Taking Screenshots...';
+  triggerBtn.disabled = true;
+  
+  try {
+    const { ipcRenderer } = require('electron');
+    
+    const result = await ipcRenderer.invoke('capture-manual-screenshots', {
+      browsers: manualModeBrowsers
+    });
+    
+    if (result.success) {
+      // Reset UI since browsers are auto-closed
+      manualModeActive = false;
+      manualModeBrowsers = [];
+      
+      const manualBtn = document.getElementById('manualModeBtn');
+      manualBtn.textContent = '🚀 Manual Screenshot Mode';
+      manualBtn.style.background = '#4CAF50';
+      manualBtn.disabled = false;
+      
+      const autoCloseMsg = result.autoClosedBrowsers ? '\n\n✅ All browser windows closed automatically.' : '';
+      
+      alert(`Screenshots complete! 
+      
+Saved ${result.count} screenshots to /screenshots folder:
+${result.filenames.join('\n')}${autoCloseMsg}`);
+    } else {
+      throw new Error(result.error || 'Failed to capture screenshots');
+    }
+    
+  } catch (error) {
+    console.error('Failed to capture manual screenshots:', error);
+    alert(`Failed to capture screenshots: ${error.message}`);
+  } finally {
+    triggerBtn.textContent = originalText;
+    triggerBtn.disabled = false;
+  }
+};
+
+window.closeManualMode = async function() {
+  if (!manualModeActive) return;
+  
+  try {
+    const { ipcRenderer } = require('electron');
+    await ipcRenderer.invoke('close-manual-browsers');
+    
+    manualModeActive = false;
+    manualModeBrowsers = [];
+    
+    const manualBtn = document.getElementById('manualModeBtn');
+    const triggerBtn = document.getElementById('triggerScreenshotBtn');
+    
+    manualBtn.textContent = '🚀 Manual Screenshot Mode';
+    manualBtn.style.background = '#4CAF50';
+    manualBtn.disabled = false;
+    triggerBtn.disabled = true;
+    
+    console.log('Manual mode closed');
+  } catch (error) {
+    console.error('Failed to close manual mode:', error);
+  }
+};
+
+// Auto-close manual mode when app closes
+window.addEventListener('beforeunload', closeManualMode);
 
 // Global function exports
 window.toggleHistory = toggleHistory;
