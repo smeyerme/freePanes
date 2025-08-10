@@ -1,0 +1,34 @@
+{
+  "responsive": ["iPhone 14 Pro", "iPad Air", "MacBook Air"],
+  "mobile": [
+    "iPhone 14 Pro",
+    "iPhone XE",
+    "iPhone SE",
+    "Samsung Galaxy S24",
+    "Google Pixel 8a"
+  ],
+  "tablet": ["iPad Air", "iPad Pro 11\"", "Samsung Galaxy Tab S9"],
+  "desktop": ["MacBook Air", "Desktop HD"],
+  "app-store": [
+    "iPhone 6.9\" (App Store)",
+    "iPad 13\" (App Store)",
+    "Mac App Store"
+  ],
+  "app-store-hd": [
+    "iPhone 6.9\" @3x (App Store)",
+    "iPad 13\" @2x (App Store)",
+    "Mac App Store Retina"
+  ],
+  "play-store": [
+    "Android Phone (Play Store)",
+    "Android Tablet 7\" (Play Store)",
+    "Android Tablet 10\" (Play Store)",
+    "Wear OS (Play Store)"
+  ],
+  "play-store-hd": [
+    "Android Phone @2x (Play Store)",
+    "Android Tablet 7\" @2x (Play Store)",
+    "Android Tablet 10\" @2x (Play Store)",
+    "Wear OS @2x (Play Store)"
+  ]
+}

@@ -210,7 +210,12 @@
   <body>
     <div class="header">
       <div class="url-bar">
-        <input type="text" class="url-input" id="urlInput" placeholder="Enter URL..." value="https://example.com">
+        <div style="position: relative; flex: 1;">
+          <input type="text" class="url-input" id="urlInput" placeholder="Enter URL..." value="https://example.com">
+          <button class="btn" id="historyBtn" onclick="toggleHistory()" style="position: absolute; right: 5px; top: 50%; transform: translateY(-50%); padding: 4px 8px; font-size: 12px;">▼</button>
+          <div class="url-history" id="urlHistory" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #2a2a2a; border: 1px solid #444; border-radius: 8px; margin-top: 2px; z-index: 1000; max-height: 200px; overflow-y: auto;">
+          </div>
+        </div>
         <button class="btn" onclick="loadURL()">Go</button>
         <button class="btn" onclick="reloadAll()">⟳</button>
       </div>
@@ -218,7 +223,12 @@
       <div class="device-presets">
         <button class="device-preset active" onclick="loadPreset('responsive')">Responsive</button>
         <button class="device-preset" onclick="loadPreset('mobile')">Mobile</button>
+        <button class="device-preset" onclick="loadPreset('tablet')">Tablet</button>
         <button class="device-preset" onclick="loadPreset('desktop')">Desktop</button>
+        <button class="device-preset" onclick="loadPreset('app-store')" style="background: #007AFF;">🍎 App Store</button>
+        <button class="device-preset" onclick="loadPreset('app-store-hd')" style="background: #007AFF; font-weight: bold;">🍎 App Store HD</button>
+        <button class="device-preset" onclick="loadPreset('play-store')" style="background: #34A853;">📱 Play Store</button>
+        <button class="device-preset" onclick="loadPreset('play-store-hd')" style="background: #34A853; font-weight: bold;">📱 Play Store HD</button>
       </div>
     </div>
 
@@ -241,7 +251,8 @@
       </label>
       </div>
 
-      <button class="btn" onclick="showDebugInfo()" style="margin-left: auto;">Debug</button>
+      <button class="btn" onclick="screenshotAll()" style="margin-left: auto;">📸 Screenshot All</button>
+      <button class="btn" onclick="showDebugInfo()">Debug</button>
     </div>
 
     <div class="viewports-container" id="viewportsContainer"></div>
