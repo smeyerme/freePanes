@@ -36,7 +36,11 @@ let webviews = [];
 let currentURL = "http://localhost:8080/";
 let isScreenshotting = false; // Flag to prevent resize handler during screenshots
 let recordedActions = [];
+let deviceSpecificActions = {}; // Store actions per device name
 let isRecording = false;
+let customDeviceSelection = []; // For custom preset
+let currentPreset = 'responsive';
+let hideScrollbars = true; // Default to hiding scrollbars
 let syncSettings = {
   scroll: true,
   navigation: true, // Sync URL/route changes
@@ -47,6 +51,10 @@ let syncSettings = {
 
 function createViewport(deviceName) {
   const device = devices[deviceName];
+  if (!device) {
+    console.error(`Device '${deviceName}' not found. Available devices:`, Object.keys(devices));
+    return document.createElement("div"); // Return empty div to prevent crashes
+  }
   const scale = calculateScale(device);
 
   const viewportDiv = document.createElement("div");
@@ -55,10 +63,23 @@ function createViewport(deviceName) {
   // Create header
   const header = document.createElement("div");
   header.className = "viewport-header";
-  header.innerHTML = `
+  
+  const deviceInfo = document.createElement("div");
+  deviceInfo.style.display = "flex";
+  deviceInfo.style.alignItems = "center";
+  deviceInfo.innerHTML = `
     <span class="device-name">${deviceName}</span>
     <span class="device-size">${device.width} × ${device.height}</span>
   `;
+  
+  const devToolsBtn = document.createElement("button");
+  devToolsBtn.className = "devtools-btn";
+  devToolsBtn.innerHTML = '<svg class="icon icon-sm"><use href="#icon-tools"></use></svg>';
+  devToolsBtn.title = "Open DevTools";
+  devToolsBtn.onclick = () => toggleDevTools(webview, devToolsBtn);
+  
+  header.appendChild(deviceInfo);
+  header.appendChild(devToolsBtn);
   viewportDiv.appendChild(header);
 
   // Create webview container at logical dimensions for proper mobile layout
@@ -67,7 +88,13 @@ function createViewport(deviceName) {
   container.style.width = device.width * scale + "px";
   container.style.height = device.height * scale + "px";
   container.style.position = "relative";
-  container.style.overflow = "hidden";
+  
+  // Only hide overflow if scrollbars are visible, otherwise allow scrolling
+  if (hideScrollbars) {
+    container.style.overflow = "auto"; // Allow scrolling when scrollbars are hidden
+  } else {
+    container.style.overflow = "hidden"; // Hide overflow when scrollbars are visible
+  }
 
   // Create webview
   const webview = document.createElement("webview");
@@ -104,12 +131,21 @@ function createViewport(deviceName) {
   webview.deviceInfo = device;
   webview.deviceName = deviceName;
   webview.containerElement = container;
+  webview.devToolsButton = devToolsBtn;
 
   // Wait for DOM ready before injecting scripts
   webview.addEventListener("dom-ready", () => {
-    // Only inject if sync is needed
+    // Apply scrollbar hiding FIRST if enabled (before sync scripts)
+    if (hideScrollbars) {
+      applyScrollbarHiding(webview);
+    }
+    
+    // Then inject sync scripts after scrollbar CSS is applied
     if (syncSettings.scroll || syncSettings.hover || syncSettings.input) {
-      setupWebviewSync(webview);
+      // Small delay to ensure CSS is applied
+      setTimeout(() => {
+        setupWebviewSync(webview);
+      }, 100);
     }
   });
 
@@ -133,6 +169,21 @@ function createViewport(deviceName) {
   webview.addEventListener("did-fail-load", (e) => {
     console.log(`Failed to load in ${deviceName}:`, e.errorDescription);
     // Don't propagate load errors to other views
+  });
+
+  // Handle DevTools state changes
+  webview.addEventListener("devtools-opened", () => {
+    if (webview.devToolsButton) {
+      webview.devToolsButton.classList.add('active');
+      webview.devToolsButton.title = 'Close DevTools';
+    }
+  });
+
+  webview.addEventListener("devtools-closed", () => {
+    if (webview.devToolsButton) {
+      webview.devToolsButton.classList.remove('active');
+      webview.devToolsButton.title = 'Open DevTools';
+    }
   });
 
   webviews.push(webview);
@@ -165,6 +216,12 @@ function setupWebviewSync(webview) {
   // Enhanced sync script with recording functionality
   const syncScript = `
     (function() {
+      // Clean up any existing event listeners to prevent duplicates
+      if (window.syncCleanupFunctions) {
+        window.syncCleanupFunctions.forEach(cleanup => cleanup());
+      }
+      window.syncCleanupFunctions = [];
+      
       let isProcessingSync = false;
       let lastScrollTime = 0;
       let lastClickTime = 0;
@@ -250,7 +307,7 @@ function setupWebviewSync(webview) {
       }
       
       // Record clicks
-      document.addEventListener('click', function(e) {
+      const recordClickHandler = function(e) {
         if (window.isRecording && !isProcessingSync) {
           const action = {
             type: 'click',
@@ -267,10 +324,17 @@ function setupWebviewSync(webview) {
           window.recordedActions.push(action);
           console.log('RECORD:CLICK:', JSON.stringify(action));
         }
-      }, true);
+      };
+      
+      document.addEventListener('click', recordClickHandler, true);
+      
+      // Store cleanup function
+      window.syncCleanupFunctions.push(() => {
+        document.removeEventListener('click', recordClickHandler, true);
+      });
       
       // Record input changes
-      document.addEventListener('input', function(e) {
+      const recordInputHandler = function(e) {
         if (window.isRecording && !isProcessingSync) {
           const action = {
             type: 'input',
@@ -282,11 +346,18 @@ function setupWebviewSync(webview) {
           window.recordedActions.push(action);
           console.log('RECORD:INPUT:', JSON.stringify(action));
         }
-      }, true);
+      };
+      
+      document.addEventListener('input', recordInputHandler, true);
+      
+      // Store cleanup function
+      window.syncCleanupFunctions.push(() => {
+        document.removeEventListener('input', recordInputHandler, true);
+      });
       
       // Record scrolling (throttled)
       let scrollTimeout = null;
-      window.addEventListener('scroll', function(e) {
+      const recordScrollHandler = function(e) {
         if (window.isRecording && !isProcessingSync) {
           clearTimeout(scrollTimeout);
           scrollTimeout = setTimeout(() => {
@@ -301,18 +372,25 @@ function setupWebviewSync(webview) {
             console.log('RECORD:SCROLL:', JSON.stringify(action));
           }, 150);
         }
-      }, { passive: true });
+      };
+      
+      window.addEventListener('scroll', recordScrollHandler, { passive: true });
+      
+      // Store cleanup function
+      window.syncCleanupFunctions.push(() => {
+        window.removeEventListener('scroll', recordScrollHandler, { passive: true });
+      });
       
       // Global functions for controlling recording
       window.startRecording = function() {
         window.isRecording = true;
         window.recordedActions = [];
-        console.log('🔴 Started recording interactions...');
+        console.log('Started recording interactions...');
       };
       
       window.stopRecording = function() {
         window.isRecording = false;
-        console.log('⏹️ Stopped recording. Captured', window.recordedActions.length, 'actions');
+        console.log('Stopped recording. Captured', window.recordedActions.length, 'actions');
         return window.recordedActions;
       };
       
@@ -322,7 +400,9 @@ function setupWebviewSync(webview) {
       
       // Only sync scroll - the most reliable sync
       if (${syncSettings.scroll}) {
-        window.addEventListener('scroll', function() {
+        console.log('Setting up scroll sync listener...');
+        
+        const scrollHandler = function() {
           if (isProcessingSync) return;
           
           const now = Date.now();
@@ -335,12 +415,23 @@ function setupWebviewSync(webview) {
           };
           
           console.log('SYNC:SCROLL:' + JSON.stringify(data));
-        }, { passive: true });
+        };
+        
+        window.addEventListener('scroll', scrollHandler, { passive: true });
+        
+        // Store cleanup function
+        window.syncCleanupFunctions.push(() => {
+          window.removeEventListener('scroll', scrollHandler, { passive: true });
+        });
+        
+        // Test scroll capability
+        console.log('Scroll dimensions - Width:', document.documentElement.scrollWidth, 'Height:', document.documentElement.scrollHeight);
+        console.log('Viewport dimensions - Width:', window.innerWidth, 'Height:', window.innerHeight);
       }
       
       // Smart click sync
       if (${syncSettings.click}) {
-        document.addEventListener('click', function(e) {
+        const syncClickHandler = function(e) {
           if (isProcessingSync) return;
           
           const now = Date.now();
@@ -398,30 +489,66 @@ function setupWebviewSync(webview) {
             href: target.href || null,
             text: target.textContent ? target.textContent.substring(0, 30) : ''
           }));
-          
-        }, true); // Use capture phase
+        };
+        
+        document.addEventListener('click', syncClickHandler, true);
+        
+        // Store cleanup function
+        window.syncCleanupFunctions.push(() => {
+          document.removeEventListener('click', syncClickHandler, true);
+        });
       }
       
-      // Simple hover tracking if enabled
+      // Element-based hover tracking if enabled
       if (${syncSettings.hover}) {
         let hoverTimer = null;
-        document.addEventListener('mousemove', function(e) {
+        let lastHoveredElement = null;
+        
+        const hoverOverHandler = function(e) {
           if (isProcessingSync) return;
+          
+          const target = e.target;
+          if (target === lastHoveredElement) return; // Same element, skip
+          
+          lastHoveredElement = target;
           
           clearTimeout(hoverTimer);
           hoverTimer = setTimeout(() => {
-            const el = document.elementFromPoint(e.clientX, e.clientY);
-            if (el && el.id) {
-              console.log('SYNC:HOVER:' + JSON.stringify({ id: el.id }));
+            // Generate selector for the hovered element
+            const selector = generateSelector(target);
+            if (selector) {
+              console.log('SYNC:HOVER:' + JSON.stringify({ 
+                selector: selector,
+                tagName: target.tagName,
+                className: target.className,
+                textContent: target.textContent ? target.textContent.substring(0, 30) : ''
+              }));
             }
-          }, 100);
-        }, { passive: true });
+          }, 200); // Increased throttle for better reliability
+        };
+        
+        const hoverOutHandler = function(e) {
+          if (isProcessingSync) return;
+          if (e.target === lastHoveredElement) {
+            lastHoveredElement = null;
+          }
+        };
+        
+        document.addEventListener('mouseover', hoverOverHandler, { passive: true });
+        document.addEventListener('mouseout', hoverOutHandler, { passive: true });
+        
+        // Store cleanup functions
+        window.syncCleanupFunctions.push(() => {
+          document.removeEventListener('mouseover', hoverOverHandler, { passive: true });
+          document.removeEventListener('mouseout', hoverOutHandler, { passive: true });
+        });
       }
       
       // Minimal input sync if enabled
       if (${syncSettings.input}) {
         let inputTimer = null;
-        document.addEventListener('input', function(e) {
+        
+        const syncInputHandler = function(e) {
           if (isProcessingSync) return;
           
           const el = e.target;
@@ -434,7 +561,14 @@ function setupWebviewSync(webview) {
               }));
             }, 500);
           }
-        }, true);
+        };
+        
+        document.addEventListener('input', syncInputHandler, true);
+        
+        // Store cleanup function
+        window.syncCleanupFunctions.push(() => {
+          document.removeEventListener('input', syncInputHandler, true);
+        });
       }
       
       // Apply sync function
@@ -470,10 +604,24 @@ function setupWebviewSync(webview) {
                 // If selector fails, try simpler approach
                 console.log('Click sync failed for selector:', data.selector);
               }
-            } else if (type === 'hover' && data.id) {
-              const el = document.getElementById(data.id);
-              if (el) {
-                el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            } else if (type === 'hover' && data.selector) {
+              try {
+                const el = document.querySelector(data.selector);
+                if (el) {
+                  // Dispatch mouseover event to simulate hover
+                  el.dispatchEvent(new MouseEvent('mouseover', { 
+                    bubbles: true,
+                    cancelable: true 
+                  }));
+                  
+                  // Also dispatch mouseenter for compatibility
+                  el.dispatchEvent(new MouseEvent('mouseenter', { 
+                    bubbles: true,
+                    cancelable: true 
+                  }));
+                }
+              } catch (e) {
+                console.warn('SYNC:HOVER: Could not find element with selector:', data.selector);
               }
             } else if (type === 'input' && data.id) {
               const el = document.getElementById(data.id);
@@ -499,9 +647,12 @@ function setupWebviewSync(webview) {
     console.log(`Sync script injection skipped for ${webview.deviceName}`);
   });
 
+  // Track last recorded action to prevent duplicates
+  webview.lastRecordedAction = { time: 0, type: '', data: '' };
+  
   // Listen for sync messages
   webview.addEventListener("console-message", (e) => {
-    if (!e.message.startsWith("SYNC:")) return;
+    if (!e.message.startsWith("SYNC:") && !e.message.startsWith("RECORD:")) return;
 
     try {
       if (e.message.startsWith("SYNC:SCROLL:") && syncSettings.scroll) {
@@ -510,17 +661,68 @@ function setupWebviewSync(webview) {
       } else if (e.message.startsWith("SYNC:CLICK:") && syncSettings.click) {
         const data = JSON.parse(e.message.replace("SYNC:CLICK:", ""));
         syncToOtherWebviews(webview, "click", data);
+        // Record this click for the SOURCE device (only through SYNC, not RECORD)
+        if (isRecording) {
+          // Check for duplicate within 100ms
+          const now = Date.now();
+          const isDuplicate = webview.lastRecordedAction.type === 'click' && 
+                            (now - webview.lastRecordedAction.time) < 100;
+          
+          if (!isDuplicate) {
+            storeDeviceSpecificAction(webview, "click", data);
+            webview.lastRecordedAction = { time: now, type: 'click', data: JSON.stringify(data) };
+          }
+        }
       } else if (e.message.startsWith("SYNC:HOVER:") && syncSettings.hover) {
         const data = JSON.parse(e.message.replace("SYNC:HOVER:", ""));
         syncToOtherWebviews(webview, "hover", data);
       } else if (e.message.startsWith("SYNC:INPUT:") && syncSettings.input) {
         const data = JSON.parse(e.message.replace("SYNC:INPUT:", ""));
         syncToOtherWebviews(webview, "input", data);
+        if (isRecording) {
+          const now = Date.now();
+          const isDuplicate = webview.lastRecordedAction.type === 'input' && 
+                            (now - webview.lastRecordedAction.time) < 100;
+          
+          if (!isDuplicate) {
+            storeDeviceSpecificAction(webview, "input", data);
+            webview.lastRecordedAction = { time: now, type: 'input', data: JSON.stringify(data) };
+          }
+        }
+      } else if (e.message.startsWith("RECORD:") && isRecording) {
+        // Skip RECORD messages - we're using SYNC messages for recording
+        // This prevents duplicates since both RECORD and SYNC fire for the same action
       }
     } catch (err) {
       // Ignore parse errors
     }
   });
+}
+
+function storeDeviceSpecificAction(webview, type, data) {
+  const deviceName = webview.deviceName;
+  if (!deviceName) return;
+  
+  // Initialize device-specific actions array if needed
+  if (!deviceSpecificActions[deviceName]) {
+    deviceSpecificActions[deviceName] = [];
+  }
+  
+  // Store the action with device context
+  const actionWithDevice = {
+    ...data,
+    type: type,
+    deviceName: deviceName,
+    timestamp: Date.now(),
+    viewport: {
+      width: webview.deviceInfo?.width || 375,
+      height: webview.deviceInfo?.height || 667,
+      deviceScaleFactor: webview.deviceInfo?.deviceScaleFactor || 1
+    }
+  };
+  
+  deviceSpecificActions[deviceName].push(actionWithDevice);
+  console.log(`Action recorded for ${deviceName}:`, actionWithDevice);
 }
 
 function syncToOtherWebviews(sourceWebview, type, data) {
@@ -532,7 +734,24 @@ function syncToOtherWebviews(sourceWebview, type, data) {
         }
       `;
 
-      webview.executeJavaScript(script, false).catch(() => {
+      webview.executeJavaScript(script, false).then(() => {
+        // If recording, store this synced action for the target device
+        if (isRecording && (type === 'click' || type === 'input')) {
+          // Check for duplicate to prevent recording the same synced action multiple times
+          const now = Date.now();
+          const isDuplicate = webview.lastRecordedAction && 
+                            webview.lastRecordedAction.type === type && 
+                            (now - webview.lastRecordedAction.time) < 100;
+          
+          if (!isDuplicate) {
+            storeDeviceSpecificAction(webview, type, data);
+            if (!webview.lastRecordedAction) {
+              webview.lastRecordedAction = {};
+            }
+            webview.lastRecordedAction = { time: now, type: type, data: JSON.stringify(data) };
+          }
+        }
+      }).catch(() => {
         // Silently ignore if webview not ready
       });
     }
@@ -584,6 +803,13 @@ function loadPresetInternal(presetName, buttonElement) {
   webviews = [];
 
   const deviceList = presets[presetName];
+  if (!deviceList) {
+    console.error(`Preset '${presetName}' not found. Available presets:`, Object.keys(presets));
+    alert(`Preset '${presetName}' not found. Using default responsive preset.`);
+    loadPresetInternal("responsive", buttonElement);
+    return;
+  }
+
   deviceList.forEach((deviceName) => {
     const viewport = createViewport(deviceName);
     container.appendChild(viewport);
@@ -618,17 +844,158 @@ window.loadPreset = function (presetName) {
 window.loadURL = loadURL;
 window.reloadAll = reloadAll;
 
+// Apply scrollbar hiding to a webview
+function applyScrollbarHiding(webview) {
+  const hideScrollbarsCSS = `
+    /* Hide scrollbars while maintaining scroll functionality */
+    ::-webkit-scrollbar {
+      width: 0px !important;
+      height: 0px !important;
+      background: transparent !important;
+    }
+    
+    /* For Firefox */
+    * {
+      scrollbar-width: none !important;
+    }
+    
+    /* Ensure overflow is still scrollable */
+    html, body {
+      overflow: auto !important;
+    }
+  `;
+
+  webview.executeJavaScript(`
+    (function() {
+      // Remove any existing scrollbar styles
+      const existingStyle = document.getElementById('hide-scrollbars-style');
+      if (existingStyle) {
+        existingStyle.remove();
+      }
+      
+      // Add new scrollbar hiding styles
+      const style = document.createElement('style');
+      style.id = 'hide-scrollbars-style';
+      style.textContent = \`${hideScrollbarsCSS}\`;
+      document.head.appendChild(style);
+      
+      console.log('Scrollbars hidden');
+    })();
+  `).catch(err => {
+    console.log(`Failed to hide scrollbars for ${webview.deviceName}:`, err);
+  });
+}
+
+// Remove scrollbar hiding from a webview
+function removeScrollbarHiding(webview) {
+  webview.executeJavaScript(`
+    (function() {
+      const existingStyle = document.getElementById('hide-scrollbars-style');
+      if (existingStyle) {
+        existingStyle.remove();
+        console.log('Scrollbars restored');
+      }
+    })();
+  `).catch(err => {
+    console.log(`Failed to restore scrollbars for ${webview.deviceName}:`, err);
+  });
+}
+
+// Update scroll sync state based on scrollbar visibility
+function updateScrollSyncState() {
+  const scrollToggle = document.getElementById("syncScroll");
+  if (scrollToggle) {
+    if (hideScrollbars) {
+      // Disable scroll sync when scrollbars are hidden
+      scrollToggle.style.opacity = "0.5";
+      scrollToggle.style.pointerEvents = "none";
+      scrollToggle.classList.remove("active");
+      scrollToggle.querySelector("input").checked = false;
+      syncSettings.scroll = false;
+      
+      // Add a tooltip or visual indicator
+      scrollToggle.setAttribute("title", "Scroll sync disabled when scrollbars are hidden");
+    } else {
+      // Enable scroll sync when scrollbars are visible
+      scrollToggle.style.opacity = "1";
+      scrollToggle.style.pointerEvents = "auto";
+      scrollToggle.classList.add("active");
+      scrollToggle.querySelector("input").checked = true;
+      syncSettings.scroll = true;
+      
+      // Remove tooltip
+      scrollToggle.removeAttribute("title");
+    }
+  }
+}
+
+// Apply scrollbar setting to all webviews
+function updateScrollbarVisibility() {
+  webviews.forEach(webview => {
+    if (webview.getURL() && webview.getURL() !== "about:blank") {
+      if (hideScrollbars) {
+        applyScrollbarHiding(webview);
+        // Allow container scrolling when scrollbars are hidden
+        webview.containerElement.style.overflow = "auto";
+      } else {
+        removeScrollbarHiding(webview);
+        // Hide container overflow when scrollbars are visible  
+        webview.containerElement.style.overflow = "hidden";
+      }
+      
+      // Reinject sync scripts after scrollbar changes to ensure scroll events work
+      if (syncSettings.scroll || syncSettings.hover || syncSettings.input) {
+        setTimeout(() => {
+          setupWebviewSync(webview);
+        }, 150); // Slightly longer delay to ensure CSS changes are applied
+      }
+    }
+  });
+}
+
+// Toggle DevTools for a specific webview
+function toggleDevTools(webview, button) {
+  try {
+    if (webview.isDevToolsOpened()) {
+      webview.closeDevTools();
+      button.classList.remove('active');
+      button.title = 'Open DevTools';
+      console.log(`DevTools closed for ${webview.deviceName}`);
+    } else {
+      webview.openDevTools();
+      button.classList.add('active');
+      button.title = 'Close DevTools';
+      console.log(`DevTools opened for ${webview.deviceName}`);
+    }
+  } catch (error) {
+    console.error(`Failed to toggle DevTools for ${webview.deviceName}:`, error);
+    
+    // Fallback: try to open DevTools even if state check failed
+    try {
+      webview.openDevTools();
+      button.classList.add('active');
+      button.title = 'Close DevTools';
+    } catch (fallbackError) {
+      console.error(`Fallback DevTools open also failed:`, fallbackError);
+      alert(`Failed to open DevTools for ${webview.deviceName}`);
+    }
+  }
+}
+
 // Setup sync toggles
 function setupSyncToggles() {
   // Scroll sync
   const scrollToggle = document.getElementById("syncScroll");
   if (scrollToggle) {
     scrollToggle.addEventListener("click", function (e) {
-      if (e.target.tagName === "INPUT") return;
+      e.preventDefault();
       const checkbox = this.querySelector("input");
-      checkbox.checked = !checkbox.checked;
-      this.classList.toggle("active", checkbox.checked);
-      syncSettings.scroll = checkbox.checked;
+      const isActive = this.classList.contains("active");
+      
+      // Toggle state
+      checkbox.checked = !isActive;
+      this.classList.toggle("active");
+      syncSettings.scroll = !isActive;
       reinjectSyncScripts();
     });
   }
@@ -637,11 +1004,13 @@ function setupSyncToggles() {
   const navToggle = document.getElementById("syncNavigation");
   if (navToggle) {
     navToggle.addEventListener("click", function (e) {
-      if (e.target.tagName === "INPUT") return;
+      e.preventDefault();
       const checkbox = this.querySelector("input");
-      checkbox.checked = !checkbox.checked;
-      this.classList.toggle("active", checkbox.checked);
-      syncSettings.navigation = checkbox.checked;
+      const isActive = this.classList.contains("active");
+      
+      checkbox.checked = !isActive;
+      this.classList.toggle("active");
+      syncSettings.navigation = !isActive;
     });
   }
 
@@ -649,11 +1018,13 @@ function setupSyncToggles() {
   const clickToggle = document.getElementById("syncClick");
   if (clickToggle) {
     clickToggle.addEventListener("click", function (e) {
-      if (e.target.tagName === "INPUT") return;
+      e.preventDefault();
       const checkbox = this.querySelector("input");
-      checkbox.checked = !checkbox.checked;
-      this.classList.toggle("active", checkbox.checked);
-      syncSettings.click = checkbox.checked;
+      const isActive = this.classList.contains("active");
+      
+      checkbox.checked = !isActive;
+      this.classList.toggle("active");
+      syncSettings.click = !isActive;
       reinjectSyncScripts();
     });
   }
@@ -662,11 +1033,13 @@ function setupSyncToggles() {
   const hoverToggle = document.getElementById("syncHover");
   if (hoverToggle) {
     hoverToggle.addEventListener("click", function (e) {
-      if (e.target.tagName === "INPUT") return;
+      e.preventDefault();
       const checkbox = this.querySelector("input");
-      checkbox.checked = !checkbox.checked;
-      this.classList.toggle("active", checkbox.checked);
-      syncSettings.hover = checkbox.checked;
+      const isActive = this.classList.contains("active");
+      
+      checkbox.checked = !isActive;
+      this.classList.toggle("active");
+      syncSettings.hover = !isActive;
       reinjectSyncScripts();
     });
   }
@@ -675,12 +1048,32 @@ function setupSyncToggles() {
   const inputToggle = document.getElementById("syncInput");
   if (inputToggle) {
     inputToggle.addEventListener("click", function (e) {
-      if (e.target.tagName === "INPUT") return;
+      e.preventDefault();
       const checkbox = this.querySelector("input");
-      checkbox.checked = !checkbox.checked;
-      this.classList.toggle("active", checkbox.checked);
-      syncSettings.input = checkbox.checked;
+      const isActive = this.classList.contains("active");
+      
+      checkbox.checked = !isActive;
+      this.classList.toggle("active");
+      syncSettings.input = !isActive;
       reinjectSyncScripts();
+    });
+  }
+
+  // Hide scrollbars toggle (enabled by default)
+  const scrollbarsToggle = document.getElementById("hideScrollbars");
+  if (scrollbarsToggle) {
+    scrollbarsToggle.addEventListener("click", function (e) {
+      e.preventDefault();
+      const checkbox = this.querySelector("input");
+      const isActive = this.classList.contains("active");
+      
+      checkbox.checked = !isActive;
+      this.classList.toggle("active");
+      hideScrollbars = !isActive;
+      
+      // Update scroll sync availability based on scrollbar visibility
+      updateScrollSyncState();
+      updateScrollbarVisibility();
     });
   }
 }
@@ -726,6 +1119,15 @@ document.addEventListener("DOMContentLoaded", () => {
   setupSyncToggles();
   setupKeyboardShortcuts();
   setupResizeHandler();
+  
+  // Set initial scroll sync state based on scrollbar visibility
+  updateScrollSyncState();
+  
+  // Populate device list in sidebar
+  populateDeviceList();
+  
+  // Hide custom preset controls initially
+  document.getElementById('customPresetControls').classList.add('hidden');
 
   // Load default preset
   loadPresetInternal("responsive");
@@ -802,8 +1204,8 @@ async function screenshotAll() {
   }
 
   const button = document.querySelector('button[onclick="screenshotAll()"]');
-  const originalText = button.textContent;
-  button.textContent = "📸 Taking Screenshots...";
+  const originalHTML = button.innerHTML;
+  button.innerHTML = '<svg class="icon"><use href="#icon-camera"></use></svg>Taking Screenshots...';
   button.disabled = true;
   
   // Set flag to prevent resize handler from reloading presets
@@ -944,7 +1346,7 @@ async function screenshotAll() {
         );
         console.log(`    Scale: ${deviceScaleFactor}x`);
       } catch (error) {
-        console.error(`❌ Failed to screenshot ${deviceName}:`, error);
+        console.error(`Failed to screenshot ${deviceName}:`, error);
         console.error(`  Error details:`, error.stack);
       }
     }
@@ -953,55 +1355,87 @@ async function screenshotAll() {
     alert(
       `Screenshots complete! Saved ${successCount}/${totalCount} screenshots to /screenshots folder`
     );
+    // Reset UI to default
+    setUIMode('default');
   } catch (error) {
-    console.error("❌ Screenshot error:", error);
+    console.error("Screenshot error:", error);
     console.error("Error stack:", error.stack);
     alert(`Failed to take screenshots: ${error.message}\n\nCheck DevTools console for details.`);
   } finally {
     // Reset flag
     isScreenshotting = false;
-    button.textContent = originalText;
+    button.innerHTML = originalHTML;
     button.disabled = false;
   }
 }
 
+// UI state management
+function setUIMode(mode) {
+  // Hide all buttons first
+  const allButtons = ['manualModeBtn', 'screenshotAllBtn', 'triggerScreenshotBtn', 
+                       'stopBtn', 'screenshotWithReplayBtn', 'cancelBtn'];
+  const advancedDropdown = document.querySelector('.advanced-capture-dropdown');
+  
+  allButtons.forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.add('hidden');
+  });
+  
+  // Show buttons based on mode
+  switch(mode) {
+    case 'default':
+      document.getElementById('manualModeBtn').classList.remove('hidden');
+      document.getElementById('screenshotAllBtn').classList.remove('hidden');
+      advancedDropdown.style.display = 'inline-block';
+      break;
+    case 'manual':
+      document.getElementById('triggerScreenshotBtn').classList.remove('hidden');
+      document.getElementById('cancelBtn').classList.remove('hidden');
+      advancedDropdown.style.display = 'none';
+      break;
+    case 'recording':
+      document.getElementById('stopBtn').classList.remove('hidden');
+      document.getElementById('cancelBtn').classList.remove('hidden');
+      advancedDropdown.style.display = 'none';
+      break;
+    case 'replay':
+      document.getElementById('screenshotWithReplayBtn').classList.remove('hidden');
+      document.getElementById('cancelBtn').classList.remove('hidden');
+      advancedDropdown.style.display = 'none';
+      break;
+  }
+  
+  // Close advanced capture menu if open
+  const advancedMenu = document.getElementById('advancedCaptureMenu');
+  const advancedToggle = document.querySelector('.advanced-capture-toggle');
+  if (advancedMenu) advancedMenu.classList.remove('open');
+  if (advancedToggle) advancedToggle.classList.remove('open');
+}
+
 // Recording control functions
 window.startRecording = function() {
-  console.log('🔴 Starting recording across all webviews...');
+  console.log('Starting device-specific recording across all webviews...');
   isRecording = true;
   recordedActions = [];
+  deviceSpecificActions = {}; // Reset device-specific actions
   
   // Start recording in all webviews
   webviews.forEach((webview, index) => {
     try {
       webview.executeJavaScript('window.startRecording && window.startRecording();');
-      console.log(`Started recording in webview ${index}`);
+      console.log(`Started recording in webview ${index} (${webview.deviceName})`);
     } catch (e) {
       console.warn(`Failed to start recording in webview ${index}:`, e);
     }
   });
   
-  // Update UI
-  const recordBtn = document.getElementById('recordBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  if (recordBtn) recordBtn.disabled = true;
-  if (stopBtn) stopBtn.disabled = false;
+  // Update UI to recording mode
+  setUIMode('recording');
 };
 
 window.stopRecording = async function() {
-  console.log('⏹️ Stopping recording...');
+  console.log('Stopping device-specific recording...');
   isRecording = false;
-  
-  // Get recorded actions from the first webview (they should all have similar actions due to sync)
-  if (webviews.length > 0) {
-    try {
-      recordedActions = await webviews[0].executeJavaScript('window.getRecordedActions && window.getRecordedActions() || [];');
-      console.log(`Captured ${recordedActions.length} actions:`, recordedActions);
-    } catch (e) {
-      console.warn('Failed to get recorded actions:', e);
-      recordedActions = [];
-    }
-  }
   
   // Stop recording in all webviews
   webviews.forEach((webview, index) => {
@@ -1012,26 +1446,43 @@ window.stopRecording = async function() {
     }
   });
   
-  // Update UI
-  const recordBtn = document.getElementById('recordBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  const screenshotBtn = document.getElementById('screenshotWithReplayBtn');
-  if (recordBtn) recordBtn.disabled = false;
-  if (stopBtn) stopBtn.disabled = true;
-  if (screenshotBtn) screenshotBtn.disabled = recordedActions.length === 0;
+  // Count total actions across all devices
+  let totalActions = 0;
+  const deviceSummary = [];
   
-  alert(`Recording stopped! Captured ${recordedActions.length} actions.`);
+  Object.keys(deviceSpecificActions).forEach(deviceName => {
+    const actions = deviceSpecificActions[deviceName];
+    totalActions += actions.length;
+    deviceSummary.push(`${deviceName}: ${actions.length} actions`);
+  });
+  
+  console.log('Device-specific recording complete:');
+  console.log('  Total actions:', totalActions);
+  console.log('  Per device:', deviceSpecificActions);
+  
+  // Update UI to replay mode if we have actions
+  if (totalActions > 0) {
+    setUIMode('replay');
+  } else {
+    setUIMode('default');
+  }
+  
+  const summaryText = deviceSummary.length > 0 ? `\n\nPer device:\n${deviceSummary.join('\n')}` : '';
+  alert(`Device-specific recording stopped! Captured ${totalActions} total actions across ${Object.keys(deviceSpecificActions).length} devices.${summaryText}`);
 };
 
 window.screenshotAllWithReplay = async function() {
-  console.log('📸 Taking screenshots with replay...');
+  console.log('Taking screenshots with device-specific replay...');
   
-  if (recordedActions.length === 0) {
+  const totalDeviceActions = Object.keys(deviceSpecificActions).reduce((sum, device) => 
+    sum + deviceSpecificActions[device].length, 0);
+  
+  if (totalDeviceActions === 0) {
     alert('No recorded actions found! Please record some interactions first.');
     return;
   }
   
-  console.log(`Using ${recordedActions.length} recorded actions for screenshots`);
+  console.log(`Using device-specific actions:`, deviceSpecificActions);
   
   if (webviews.length === 0) {
     alert("No webviews to screenshot!");
@@ -1039,8 +1490,8 @@ window.screenshotAllWithReplay = async function() {
   }
 
   const button = document.querySelector('button[onclick="screenshotAllWithReplay()"]');
-  const originalText = button.textContent;
-  button.textContent = "📹 Replaying & Screenshot...";
+  const originalHTML = button.innerHTML;
+  button.innerHTML = '<svg class="icon"><use href="#icon-video"></use></svg>Replaying & Screenshot...';
   button.disabled = true;
   
   // Set flag to prevent resize handler from reloading presets
@@ -1069,7 +1520,9 @@ window.screenshotAllWithReplay = async function() {
       const webview = webviews[i];
       const deviceName = webview.deviceName ? webview.deviceName.replace(/[^a-zA-Z0-9]/g, "_") : `device_${i}`;
       
-      console.log(`Processing webview ${i + 1}/${totalCount}: ${deviceName} with ${recordedActions.length} actions`);
+      // Get device-specific actions for this device
+      const deviceActions = deviceSpecificActions[webview.deviceName] || [];
+      console.log(`Processing webview ${i + 1}/${totalCount}: ${deviceName} with ${deviceActions.length} device-specific actions`);
 
       try {
         // Get device info
@@ -1120,7 +1573,7 @@ window.screenshotAllWithReplay = async function() {
           appState = null;
         }
         
-        // Use Playwright with recorded actions
+        // Use Playwright with device-specific actions
         const buffer = await ipcRenderer.invoke('capture-playwright-screenshot', {
           url: currentURL,
           width: logicalWidth,
@@ -1128,7 +1581,7 @@ window.screenshotAllWithReplay = async function() {
           deviceScaleFactor: deviceScaleFactor,
           userAgent: webview.getAttribute('useragent'),
           appState: appState,
-          recordedActions: recordedActions
+          recordedActions: deviceActions // Use device-specific actions instead of generic ones
         });
         
         console.log(`  ✅ Screenshot with replay successful (${buffer.length} bytes)`);
@@ -1149,9 +1602,9 @@ window.screenshotAllWithReplay = async function() {
           `    Physical: ${physicalWidth}x${physicalHeight} (screenshot target)`
         );
         console.log(`    Scale: ${deviceScaleFactor}x`);
-        console.log(`    Actions replayed: ${recordedActions.length}`);
+        console.log(`    Actions replayed: ${deviceActions.length} (device-specific for ${webview.deviceName})`);
       } catch (error) {
-        console.error(`❌ Failed to screenshot ${deviceName}:`, error);
+        console.error(`Failed to screenshot ${deviceName}:`, error);
         console.error(`  Error details:`, error.stack);
       }
     }
@@ -1160,14 +1613,18 @@ window.screenshotAllWithReplay = async function() {
     alert(
       `Screenshots with replay complete! Saved ${successCount}/${totalCount} screenshots to /screenshots folder`
     );
+    // Reset UI to default
+    setUIMode('default');
+    // Clear recorded actions
+    deviceSpecificActions = {};
   } catch (error) {
-    console.error("❌ Screenshot with replay error:", error);
+    console.error("Screenshot with replay error:", error);
     console.error("Error stack:", error.stack);
     alert(`Failed to take screenshots with replay: ${error.message}\n\nCheck DevTools console for details.`);
   } finally {
     // Reset flag
     isScreenshotting = false;
-    button.textContent = originalText;
+    button.innerHTML = originalHTML;
     button.disabled = false;
   }
 };
@@ -1177,7 +1634,7 @@ let manualModeActive = false;
 let manualModeBrowsers = [];
 
 window.openManualMode = async function() {
-  console.log('🚀 Opening manual screenshot mode...');
+  console.log('Opening manual screenshot mode...');
   
   if (manualModeActive) {
     alert('Manual mode is already active!');
@@ -1185,7 +1642,6 @@ window.openManualMode = async function() {
   }
   
   const manualBtn = document.getElementById('manualModeBtn');
-  const triggerBtn = document.getElementById('triggerScreenshotBtn');
   
   manualBtn.textContent = '⏳ Extracting state...';
   manualBtn.disabled = true;
@@ -1279,9 +1735,8 @@ window.openManualMode = async function() {
       manualModeActive = true;
       manualModeBrowsers = result.browsers;
       
-      manualBtn.textContent = '✅ Manual Mode Active';
-      manualBtn.style.background = '#4CAF50';
-      triggerBtn.disabled = false;
+      // Switch to manual mode UI
+      setUIMode('manual');
       
       // Generate device list for user message
       const deviceList = currentDevices.map(d => 
@@ -1293,7 +1748,7 @@ window.openManualMode = async function() {
 ${currentDevices.length} browser windows are now open:
 ${deviceList}
 
-Navigate to the exact state you want in each browser, then click "📸 Take Screenshots Now"`);
+Navigate to the exact state you want in each browser, then click \"Take Screenshots Now\"`);
       
     } else {
       throw new Error(result.error || 'Failed to open browsers');
@@ -1303,7 +1758,7 @@ Navigate to the exact state you want in each browser, then click "📸 Take Scre
     console.error('Failed to open manual mode:', error);
     alert(`Failed to open manual mode: ${error.message}`);
     
-    manualBtn.textContent = '🚀 Manual Screenshot Mode';
+    manualBtn.innerHTML = '<svg class="icon"><use href="#icon-launch"></use></svg>Manual Mode';
     manualBtn.disabled = false;
   }
 };
@@ -1314,11 +1769,11 @@ window.triggerRemoteScreenshot = async function() {
     return;
   }
   
-  console.log('📸 Triggering remote screenshots...');
+  console.log('Triggering remote screenshots...');
   
   const triggerBtn = document.getElementById('triggerScreenshotBtn');
-  const originalText = triggerBtn.textContent;
-  triggerBtn.textContent = '📸 Taking Screenshots...';
+  const originalHTML = triggerBtn.innerHTML;
+  triggerBtn.innerHTML = '<svg class="icon"><use href="#icon-camera"></use></svg>Taking Screenshots...';
   triggerBtn.disabled = true;
   
   try {
@@ -1333,10 +1788,8 @@ window.triggerRemoteScreenshot = async function() {
       manualModeActive = false;
       manualModeBrowsers = [];
       
-      const manualBtn = document.getElementById('manualModeBtn');
-      manualBtn.textContent = '🚀 Manual Screenshot Mode';
-      manualBtn.style.background = '#4CAF50';
-      manualBtn.disabled = false;
+      // Reset UI to default
+      setUIMode('default');
       
       const autoCloseMsg = result.autoClosedBrowsers ? '\n\n✅ All browser windows closed automatically.' : '';
       
@@ -1352,7 +1805,7 @@ ${result.filenames.join('\n')}${autoCloseMsg}`);
     console.error('Failed to capture manual screenshots:', error);
     alert(`Failed to capture screenshots: ${error.message}`);
   } finally {
-    triggerBtn.textContent = originalText;
+    triggerBtn.innerHTML = originalHTML;
     triggerBtn.disabled = false;
   }
 };
@@ -1360,33 +1813,293 @@ ${result.filenames.join('\n')}${autoCloseMsg}`);
 window.closeManualMode = async function() {
   if (!manualModeActive) return;
   
+  console.log('Closing manual mode and all browsers...');
+  
   try {
     const { ipcRenderer } = require('electron');
-    await ipcRenderer.invoke('close-manual-browsers');
+    const result = await ipcRenderer.invoke('close-manual-browsers');
+    
+    if (!result.success) {
+      console.error('Failed to close browsers:', result.error);
+      alert('Warning: Some browsers may not have closed properly. You may need to close them manually.');
+    }
     
     manualModeActive = false;
     manualModeBrowsers = [];
     
-    const manualBtn = document.getElementById('manualModeBtn');
-    const triggerBtn = document.getElementById('triggerScreenshotBtn');
-    
-    manualBtn.textContent = '🚀 Manual Screenshot Mode';
-    manualBtn.style.background = '#4CAF50';
-    manualBtn.disabled = false;
-    triggerBtn.disabled = true;
-    
     console.log('Manual mode closed');
   } catch (error) {
     console.error('Failed to close manual mode:', error);
+    alert('Error closing browsers. You may need to close them manually or restart the app.');
   }
+};
+
+// Cancel mode function
+window.cancelMode = async function() {
+  console.log('Cancelling current mode...');
+  
+  // Stop recording if active
+  if (isRecording) {
+    isRecording = false;
+    webviews.forEach((webview, index) => {
+      try {
+        webview.executeJavaScript('window.stopRecording && window.stopRecording();');
+      } catch (e) {
+        console.warn(`Failed to stop recording in webview ${index}:`, e);
+      }
+    });
+  }
+  
+  // Close manual mode if active
+  if (manualModeActive) {
+    await closeManualMode();
+  }
+  
+  // Clear any recorded actions
+  recordedActions = [];
+  deviceSpecificActions = {};
+  
+  // Reset UI to default
+  setUIMode('default');
+  
+  console.log('Mode cancelled and reset to default');
+};
+
+// Advanced Capture dropdown toggle
+window.toggleAdvancedCapture = function() {
+  const toggle = document.querySelector('.advanced-capture-toggle');
+  const menu = document.getElementById('advancedCaptureMenu');
+  
+  toggle.classList.toggle('open');
+  menu.classList.toggle('open');
 };
 
 // Auto-close manual mode when app closes
 window.addEventListener('beforeunload', closeManualMode);
 
+// Sidebar and dropdown functions
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('active');
+}
+
+function togglePresetDropdown() {
+  const toggle = document.querySelector('.preset-dropdown-toggle');
+  const menu = document.getElementById('presetDropdownMenu');
+  
+  toggle.classList.toggle('open');
+  menu.classList.toggle('open');
+}
+
+function selectPreset(presetName) {
+  currentPreset = presetName;
+  document.getElementById('currentPresetName').textContent = getPresetDisplayName(presetName);
+  
+  // Update active item in dropdown
+  document.querySelectorAll('.preset-dropdown-item').forEach(item => {
+    item.classList.remove('active');
+  });
+  document.querySelector(`[onclick="selectPreset('${presetName}')"]`).classList.add('active');
+  
+  // Close dropdown
+  togglePresetDropdown();
+  
+  // Show/hide custom preset controls
+  const customControls = document.getElementById('customPresetControls');
+  if (presetName === 'custom') {
+    customControls.classList.remove('hidden');
+    toggleSidebar(); // Open sidebar for custom preset selection
+  } else {
+    customControls.classList.add('hidden');
+    loadPresetInternal(presetName);
+  }
+}
+
+function getPresetDisplayName(presetName) {
+  const names = {
+    'responsive': 'Responsive',
+    'mobile': 'Mobile', 
+    'tablet': 'Tablet',
+    'desktop': 'Desktop',
+    'app-store': 'App Store',
+    'app-store-hd': 'App Store HD',
+    'play-store': 'Play Store', 
+    'play-store-hd': 'Play Store HD',
+    'custom': 'Custom'
+  };
+  return names[presetName] || presetName;
+}
+
+function populateDeviceList() {
+  const deviceList = document.getElementById('deviceList');
+  deviceList.innerHTML = '';
+  
+  // Group devices by category
+  const categories = {
+    'Mobile Phones': [],
+    'Tablets': [],
+    'Desktops': [],
+    'App Store Sizes': []
+  };
+  
+  Object.keys(devices).forEach(deviceName => {
+    const device = devices[deviceName];
+    let category = 'Mobile Phones';
+    
+    if (deviceName.includes('iPad') || deviceName.includes('Tab')) {
+      category = 'Tablets';
+    } else if (deviceName.includes('MacBook') || deviceName.includes('Desktop') || deviceName.includes('Mac App Store')) {
+      category = 'Desktops';
+    } else if (deviceName.includes('App Store') || deviceName.includes('Play Store')) {
+      category = 'App Store Sizes';
+    }
+    
+    categories[category].push({ name: deviceName, ...device });
+  });
+  
+  // Create HTML for each category
+  Object.keys(categories).forEach(categoryName => {
+    if (categories[categoryName].length === 0) return;
+    
+    const categoryDiv = document.createElement('div');
+    categoryDiv.className = 'device-category';
+    
+    const titleDiv = document.createElement('div');
+    titleDiv.className = 'category-title';
+    titleDiv.textContent = categoryName;
+    categoryDiv.appendChild(titleDiv);
+    
+    categories[categoryName].forEach(device => {
+      const deviceItem = document.createElement('div');
+      deviceItem.className = 'device-item';
+      deviceItem.onclick = () => toggleDeviceSelection(device.name);
+      
+      const deviceInfo = document.createElement('div');
+      deviceInfo.className = 'device-info';
+      
+      const deviceNameDiv = document.createElement('div');
+      deviceNameDiv.className = 'device-item-name';
+      deviceNameDiv.textContent = device.name;
+      deviceInfo.appendChild(deviceNameDiv);
+      
+      const deviceSizeDiv = document.createElement('div');
+      deviceSizeDiv.className = 'device-item-size';
+      deviceSizeDiv.textContent = `${device.width} × ${device.height}`;
+      if (device.deviceScaleFactor && device.deviceScaleFactor !== 1) {
+        deviceSizeDiv.textContent += ` @ ${device.deviceScaleFactor}x`;
+      }
+      deviceInfo.appendChild(deviceSizeDiv);
+      
+      const selectedIcon = document.createElement('div');
+      selectedIcon.className = 'device-selected-icon';
+      selectedIcon.textContent = '✓';
+      
+      deviceItem.appendChild(deviceInfo);
+      deviceItem.appendChild(selectedIcon);
+      categoryDiv.appendChild(deviceItem);
+    });
+    
+    deviceList.appendChild(categoryDiv);
+  });
+}
+
+function toggleDeviceSelection(deviceName) {
+  const index = customDeviceSelection.indexOf(deviceName);
+  
+  // Find the device item by looking for the one containing this device name
+  const deviceItems = document.querySelectorAll('.device-item');
+  let deviceItem = null;
+  
+  deviceItems.forEach(item => {
+    const nameElement = item.querySelector('.device-item-name');
+    if (nameElement && nameElement.textContent === deviceName) {
+      deviceItem = item;
+    }
+  });
+  
+  if (index === -1) {
+    customDeviceSelection.push(deviceName);
+    if (deviceItem) deviceItem.classList.add('selected');
+  } else {
+    customDeviceSelection.splice(index, 1);
+    if (deviceItem) deviceItem.classList.remove('selected');
+  }
+  
+  updateSelectedDevicesList();
+}
+
+function updateSelectedDevicesList() {
+  const list = document.getElementById('selectedDeviceList');
+  list.innerHTML = '';
+  
+  customDeviceSelection.forEach(deviceName => {
+    const tag = document.createElement('div');
+    tag.className = 'selected-device-tag';
+    
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = deviceName;
+    
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'selected-device-remove';
+    removeBtn.textContent = '×';
+    removeBtn.onclick = (e) => {
+      e.stopPropagation();
+      toggleDeviceSelection(deviceName);
+    };
+    
+    tag.appendChild(nameSpan);
+    tag.appendChild(removeBtn);
+    list.appendChild(tag);
+  });
+}
+
+function applyCustomPreset() {
+  if (customDeviceSelection.length === 0) {
+    alert('Please select at least one device for your custom preset.');
+    return;
+  }
+  
+  // Add custom preset to presets object
+  presets.custom = [...customDeviceSelection];
+  
+  // Load the custom preset
+  loadPresetInternal('custom');
+  
+  // Close sidebar
+  toggleSidebar();
+}
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', (e) => {
+  // Close preset dropdown
+  if (!e.target.closest('.preset-dropdown')) {
+    const toggle = document.querySelector('.preset-dropdown-toggle');
+    const menu = document.getElementById('presetDropdownMenu');
+    if (toggle) toggle.classList.remove('open');
+    if (menu) menu.classList.remove('open');
+  }
+  
+  // Close advanced capture dropdown
+  if (!e.target.closest('.advanced-capture-dropdown')) {
+    const advancedToggle = document.querySelector('.advanced-capture-toggle');
+    const advancedMenu = document.getElementById('advancedCaptureMenu');
+    if (advancedToggle) advancedToggle.classList.remove('open');
+    if (advancedMenu) advancedMenu.classList.remove('open');
+  }
+});
+
 // Global function exports
 window.toggleHistory = toggleHistory;
 window.screenshotAll = screenshotAll;
+window.toggleSidebar = toggleSidebar;
+window.togglePresetDropdown = togglePresetDropdown;
+window.selectPreset = selectPreset;
+window.applyCustomPreset = applyCustomPreset;
+window.toggleAdvancedCapture = toggleAdvancedCapture;
+window.cancelMode = cancelMode;
 
 // Debug helper
 window.showDebugInfo = function () {

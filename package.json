@@ -5,17 +5,19 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "dev": "nodemon --watch . --ext js,html,css,json --ignore node_modules --ignore dist --exec electron .",
     "build-mac": "electron-builder --mac",
     "build-win": "electron-builder --win",
     "build-linux": "electron-builder --linux"
   },
   "devDependencies": {
     "electron": "^37.2.6",
-    "electron-builder": "^24.0.0"
+    "electron-builder": "^24.0.0",
+    "nodemon": "^3.1.10"
   },
   "build": {
-    "appId": "com.yourcompany.multiviewport",
-    "productName": "MultiViewport",
+    "appId": "com.smeyerme.freePanes",
+    "productName": "freePanes",
     "directories": {
       "output": "dist"
     },
@@ -32,7 +34,6 @@
   },
   "dependencies": {
     "canvas": "^3.1.2",
-    "playwright": "^1.54.2",
-    "puppeteer": "^24.16.0"
+    "playwright": "^1.54.2"
   }
 }

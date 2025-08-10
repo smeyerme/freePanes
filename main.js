@@ -10,6 +10,55 @@ app.whenReady().then(() => {
   setupIPCHandlers();
 });
 
+// Clean up browsers when app is quitting
+app.on('before-quit', async (event) => {
+  console.log('App is quitting, cleaning up browsers...');
+  
+  // Close any manual browsers
+  if (manualBrowsers.length > 0) {
+    event.preventDefault();
+    
+    for (const { browser } of manualBrowsers) {
+      if (browser) {
+        try {
+          await browser.close();
+        } catch (error) {
+          console.error('Error closing browser on quit:', error);
+          // Force kill if needed
+          if (browser._process) {
+            try {
+              browser._process.kill('SIGKILL');
+            } catch (killError) {
+              console.error('Error force-killing browser on quit:', killError);
+            }
+          }
+        }
+      }
+    }
+    
+    manualBrowsers = [];
+    app.quit();
+  }
+});
+
+// Handle window closed
+app.on('window-all-closed', async () => {
+  // Close any remaining browsers
+  for (const { browser } of manualBrowsers) {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (error) {
+        console.error('Error closing browser on window close:', error);
+      }
+    }
+  }
+  
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1600,
@@ -421,9 +470,9 @@ function setupIPCHandlers() {
                     }
                   }
                 } else if (elementExists.exists && !elementExists.visible) {
-                  console.log(`IPC: ❌ Element exists but not visible: ${action.selector}`);
+                  console.log(`IPC: Element exists but not visible: ${action.selector}`);
                 } else {
-                  console.log(`IPC: ❌ Element not found: ${action.selector}`);
+                  console.log(`IPC: Element not found: ${action.selector}`);
                   // Fallback to coordinates
                   if (action.coordinates) {
                     await page.mouse.click(action.coordinates.x, action.coordinates.y);
@@ -916,8 +965,21 @@ ipcMain.handle('close-manual-browsers', async (event) => {
   
   try {
     for (const { browser } of manualBrowsers) {
-      if (browser && !browser.isConnected()) {
-        await browser.close();
+      if (browser) {
+        try {
+          console.log('IPC: Closing browser...');
+          await browser.close();
+        } catch (closeError) {
+          console.error('IPC: Error closing individual browser:', closeError);
+          // Force kill the browser process if normal close fails
+          try {
+            if (browser._process) {
+              browser._process.kill('SIGKILL');
+            }
+          } catch (killError) {
+            console.error('IPC: Error force-killing browser:', killError);
+          }
+        }
       }
     }
     
